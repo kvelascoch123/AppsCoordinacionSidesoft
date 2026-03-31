@@ -1,0 +1,54 @@
+:root {
+  --bg: #0c0f14;
+  --surface: #131822;
+  --surface2: #1a2130;
+  --border: #2a3344;
+  --text: #e8edf5;
+  --muted: #8b98ad;
+  --accent: #3d9cf5;
+  --accent-dim: #2563a8;
+  --warn: #f5a524;
+  --danger: #ef5b5b;
+  --ok: #3ecf8e;
+  --radius: 12px;
+  --font: "DM Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font);
+  background: radial-gradient(1200px 800px at 10% -10%, #1a2840 0%, transparent 55%),
+    radial-gradient(900px 600px at 100% 0%, #1a3040 0%, transparent 50%), var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+#root {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+/* Recharts: forzar texto legible sobre tema oscuro (leyenda / tooltips / ejes) */
+.recharts-legend-item-text {
+  color: var(--text) !important;
+}
+
+.recharts-default-tooltip .recharts-tooltip-label,
+.recharts-tooltip-item-name,
+.recharts-tooltip-item-value,
+.recharts-tooltip-item-separator {
+  color: var(--text) !important;
+}
+
+.recharts-cartesian-axis-tick-value tspan {
+  fill: var(--text);
+}
