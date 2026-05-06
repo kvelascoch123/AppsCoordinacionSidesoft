@@ -20,6 +20,7 @@ frontend/dist/
 *.tsbuildinfo
 
 # IDE y OS
+.cursor/
 .idea/
 .vscode/
 *.swp

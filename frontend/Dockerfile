@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm install
 
 COPY index.html vite.config.ts tsconfig.json tsconfig.node.json ./
+COPY public ./public
 COPY src ./src
 
 RUN npm run build

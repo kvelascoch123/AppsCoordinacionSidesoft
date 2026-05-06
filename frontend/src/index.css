@@ -1,18 +1,32 @@
 :root {
-  --bg: #0c0f14;
-  --surface: #131822;
-  --surface2: #1a2130;
-  --border: #2a3344;
-  --text: #e8edf5;
-  --muted: #8b98ad;
-  --accent: #3d9cf5;
-  --accent-dim: #2563a8;
-  --warn: #f5a524;
-  --danger: #ef5b5b;
-  --ok: #3ecf8e;
-  --radius: 12px;
-  --font: "DM Sans", system-ui, sans-serif;
+  /* Odoo-inspired enterprise palette (light) */
+  --bg-page: #f0f2f5;
+  --surface: #ffffff;
+  --surface2: #f8f9fa;
+  --border: #dee2e6;
+  --border-strong: #ced4da;
+  --text: #212529;
+  --muted: #6c757d;
+  --accent: #714b67;
+  --accent-hover: #5d3d55;
+  --accent-dim: rgba(113, 75, 103, 0.12);
+  --on-accent: #ffffff;
+  --navbar-bg: #714b67;
+  --navbar-text: #ffffff;
+  --sidebar-bg: #ffffff;
+  --sidebar-hover: #f0f2f5;
+  --sidebar-active-bg: rgba(113, 75, 103, 0.08);
+  --warn: #e9a100;
+  --danger: #dc3545;
+  --danger-text: #842029;
+  --ok: #198754;
+  --radius: 3px;
+  --radius-card: 4px;
+  --font: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, monospace;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --input-bg: #ffffff;
+  --chart-grid: #e9ecef;
 }
 
 *,
@@ -25,19 +39,239 @@ body {
   margin: 0;
   min-height: 100vh;
   font-family: var(--font);
-  background: radial-gradient(1200px 800px at 10% -10%, #1a2840 0%, transparent 55%),
-    radial-gradient(900px 600px at 100% 0%, #1a3040 0%, transparent 50%), var(--bg);
+  background: var(--bg-page);
   color: var(--text);
   line-height: 1.5;
 }
 
 #root {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 1.5rem 1.25rem 3rem;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  max-width: none;
 }
 
-/* Recharts: forzar texto legible sobre tema oscuro (leyenda / tooltips / ejes) */
+/* —— Odoo-style application shell —— */
+.odoo-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.odoo-navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  min-height: 46px;
+  padding: 0 0.75rem 0 0;
+  background: var(--navbar-bg);
+  color: var(--navbar-text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.odoo-navbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 1rem;
+}
+
+.odoo-navbar-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: -0.02em;
+}
+
+.odoo-navbar-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.odoo-navbar-sub {
+  font-size: 0.72rem;
+  opacity: 0.88;
+  line-height: 1.2;
+}
+
+.odoo-navbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.odoo-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.odoo-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+}
+
+.odoo-sidebar-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0.5rem 1rem 0.35rem;
+}
+
+.odoo-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.odoo-sidebar-nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 0.6rem 1rem 0.6rem 0.85rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.odoo-sidebar-nav button:hover {
+  background: var(--sidebar-hover);
+}
+
+.odoo-sidebar-nav button.odoo-nav-active {
+  background: var(--sidebar-active-bg);
+  border-left-color: var(--accent);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.odoo-content {
+  flex: 1;
+  min-width: 0;
+  padding: 1.25rem 1.5rem 2rem;
+  overflow-x: auto;
+}
+
+.odoo-content-header {
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.odoo-content-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.odoo-content-header p {
+  margin: 0.35rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+  max-width: 720px;
+}
+
+.odoo-btn {
+  font-family: var(--font);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  padding: 0.4rem 0.85rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.odoo-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.odoo-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.odoo-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.odoo-btn-navbar {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--navbar-text);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.odoo-btn-navbar:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+@media (max-width: 768px) {
+  .odoo-body {
+    flex-direction: column;
+  }
+
+  .odoo-sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0.5rem 0.75rem 0.75rem;
+  }
+
+  .odoo-sidebar-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  .odoo-sidebar-nav button {
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    border-radius: var(--radius);
+    padding: 0.45rem 0.65rem;
+  }
+
+  .odoo-sidebar-nav button.odoo-nav-active {
+    border-left: none;
+    border-bottom-color: var(--accent);
+  }
+
+  .odoo-sidebar-label {
+    display: none;
+  }
+
+  .odoo-content {
+    padding: 1rem;
+  }
+}
+
+/* Recharts: legible on light theme */
 .recharts-legend-item-text {
   color: var(--text) !important;
 }
@@ -51,4 +285,31 @@ body {
 
 .recharts-cartesian-axis-tick-value tspan {
   fill: var(--text);
+}
+
+/* Indicadores coordinación: rejilla compacta (2 / 3 / 4 columnas) */
+.coord-kpi-grid {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+  align-items: stretch;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 560px) {
+  .coord-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 900px) {
+  .coord-kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .coord-kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }

@@ -17,7 +17,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-10667}:80"
     depends_on:
       - api
     networks:

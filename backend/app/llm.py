@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Dict, List
 
 from openai import OpenAI
@@ -273,4 +274,132 @@ def analyze_project_tickets(project_id: int, date_from: str, date_to: str) -> Di
     parsed["ticket_ids"] = ticket_ids
     parsed["report_total_tickets"] = len(rows)
     return parsed
+
+
+_HTML = re.compile(r"<[^>]+>")
+
+
+def _plain_text(s: str, limit: int = 4000) -> str:
+    t = _HTML.sub(" ", s or "")
+    t = " ".join(t.split())
+    return t[:limit]
+
+
+def _compact_ticket_for_batch(ticket_id: int) -> str:
+    try:
+        ctx = _load_ticket_context(ticket_id)
+    except ValueError:
+        return f"ticket_id={ticket_id}\n(sin datos en GLPI)"
+    ticket = ctx["ticket"]
+    followups: List[Dict[str, Any]] = ctx.get("followups") or []
+    tasks: List[Dict[str, Any]] = ctx.get("tasks") or []
+    title = str(ticket.get("name") or "")
+    desc = _plain_text(str(ticket.get("content") or ""), 2500)
+    fu_lines: List[str] = []
+    for f in followups[:15]:
+        c = _plain_text(str(f.get("content") or ""), 450)
+        if c:
+            fu_lines.append(c)
+    task_lines: List[str] = []
+    for tsk in tasks[:15]:
+        c = _plain_text(str(tsk.get("content") or ""), 450)
+        if c:
+            task_lines.append(c)
+    return (
+        f"--- ticket_id={ticket_id} ---\nTÍTULO: {title}\n"
+        f"DESCRIPCIÓN/REQUERIMIENTO: {desc}\n"
+        f"SEGUIMIENTOS:\n- " + "\n- ".join(fu_lines if fu_lines else ["(ninguno)"])
+        + f"\nACTIVIDADES/TAREAS:\n- " + "\n- ".join(task_lines if task_lines else ["(ninguna)"])
+    )
+
+
+def _short_contexts_for_batch(ticket_ids: List[int]) -> Dict[int, str]:
+    if not ticket_ids:
+        return {}
+    blocks: List[str] = [_compact_ticket_for_batch(tid) for tid in ticket_ids]
+    joined = "\n\n".join(blocks)
+    client = _get_client()
+    system_prompt = (
+        "Actúa como un analista senior de mesa de ayuda y coordinador de soporte.\n\n"
+        "Analiza cada ticket utilizando exclusivamente la información de los bloques: "
+        "título, requerimiento (descripción), seguimientos, y actividades/tareas (contenido de tareas y seguimientos de GLPI).\n\n"
+        "Objetivo: generar un contexto ejecutivo MUY conciso (máximo 2–3 frases) que permita a un coordinador entender con rapidez: "
+        "qué se solicitó, qué problema o necesidad originó el ticket, qué acciones se ejecutaron, "
+        "qué módulos o procesos fueron afectados (si aplica) y el estado o resultado actual según el texto.\n\n"
+        "Reglas: integra toda la información en una sola narrativa coherente; no repitas literalmente el ticket, interpreta y sintetiza; "
+        "diferencia implícitamente solicitud, ejecución y resultado; menciona módulos o áreas solo si son relevantes; "
+        "si falta información clara, indícalo en una breve fórmula sin inventar; "
+        "evita frases genéricas sin contexto; no agregues nada que no aparezca en el ticket.\n\n"
+        "Cada resumen: un solo párrafo (2–3 frases máximo), claro, preciso, orientado a gestión, en español."
+    )
+    user_prompt = (
+        "A partir de los bloques siguientes (cada uno tiene ticket_id, TÍTULO, DESCRIPCIÓN/REQUERIMIENTO, SEGUIMIENTOS, ACTIVIDADES/TAREAS), "
+        "genera un contexto_corto por ticket según las reglas del sistema.\n\n"
+        "Responde SOLO JSON con esta forma exacta:\n"
+        '{ "contexts": [ { "ticket_id": <número>, "contexto_corto": "<un solo párrafo, 2–3 frases>" } ] }\n\n'
+        f"Incluye exactamente un elemento por ticket, en el mismo orden si puedes. Tickets: {ticket_ids}.\n\n"
+        f"{joined}"
+    )
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.15,
+        )
+        text = (completion.choices[0].message.content or "").strip()
+        if not text:
+            raise RuntimeError("vacío")
+        parsed = json.loads(text)
+        out: Dict[int, str] = {}
+        for item in parsed.get("contexts") or []:
+            tid = int(item.get("ticket_id") or 0)
+            if tid < 1:
+                continue
+            ctxs = str(item.get("contexto_corto") or "").strip()
+            out[tid] = ctxs or "—"
+        return out
+    except Exception:
+        return {tid: "No se pudo generar el resumen." for tid in ticket_ids}
+
+
+TICKET_TABLE_ANALYSIS_MAX = 100
+TICKET_TABLE_BATCH = 5
+
+
+def analyze_tickets_per_ticket_table(
+    project_id: int, date_from: str, date_to: str
+) -> Dict[str, Any]:
+    data = reports.tickets_created_for_project_table(project_id, date_from, date_to)
+    base_rows: List[Dict[str, Any]] = list(data.get("rows") or [])
+    n_total = len(base_rows)
+    to_analyze = base_rows[:TICKET_TABLE_ANALYSIS_MAX]
+    contexts: Dict[int, str] = {}
+    for i in range(0, len(to_analyze), TICKET_TABLE_BATCH):
+        batch = to_analyze[i : i + TICKET_TABLE_BATCH]
+        ids = [int(r["id"]) for r in batch]
+        part = _short_contexts_for_batch(ids)
+        for tid in ids:
+            contexts[tid] = part.get(tid) or "—"
+    out_rows: List[Dict[str, Any]] = []
+    for r in to_analyze:
+        tid = int(r["id"])
+        out_rows.append(
+            {
+                **r,
+                "contexto_corto": contexts.get(tid) or "—",
+            }
+        )
+    return {
+        "project_id": data.get("project_id"),
+        "project_name": data.get("project_name"),
+        "date_from": data.get("date_from"),
+        "date_to": data.get("date_to"),
+        "rows": out_rows,
+        "total_in_range": n_total,
+        "truncated": n_total > TICKET_TABLE_ANALYSIS_MAX,
+    }
 

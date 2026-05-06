@@ -46,3 +46,30 @@ def fetch_one(
 ) -> Optional[Dict[str, Any]]:
     rows = fetch_all(sql, params)
     return rows[0] if rows else None
+
+
+def bulk_update_ticket_request_types(updates: list[tuple[int, int]]) -> int:
+    """
+    Actualiza el tipo de solicitud de varios tickets.
+    Cada tupla es (requesttypes_id, ticket_id). Tabla: glpi_tickets.
+    """
+    if not updates:
+        return 0
+    with get_connection() as conn:
+        try:
+            with conn.cursor() as cur:
+                total = 0
+                for request_type_id, ticket_id in updates:
+                    total += cur.execute(
+                        """
+                        UPDATE glpi_tickets
+                        SET requesttypes_id = %s, date_mod = NOW()
+                        WHERE id = %s AND is_deleted = 0
+                        """,
+                        (request_type_id, ticket_id),
+                    )
+            conn.commit()
+            return total
+        except Exception:
+            conn.rollback()
+            raise
