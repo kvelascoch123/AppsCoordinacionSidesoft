@@ -1,0 +1,30 @@
+# Copiar a `.env` en esta misma carpeta (raíz del proyecto, junto a docker-compose.yml).
+
+# --- Conexión MySQL / MariaDB de GLPI (desde el contenedor) ---
+# En Windows/Mac: MySQL en el PC anfitrión suele ser:
+GLPI_DB_HOST=190.57.154.54
+GLPI_DB_PORT=3307
+GLPI_DB_USER=adminsoporte
+GLPI_DB_PASSWORD=adminsoporte
+GLPI_DB_NAME=glpidb
+
+# Opcional
+# GLPI_ENTITIES_ID=0
+DASHBOARD_STALE_HOURS=48
+
+# Orígenes CORS (si accede al API sin pasar por Nginx)
+CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080,http://localhost,http://127.0.0.1
+
+# Puerto publicado del panel (Nginx)
+# WEB_PORT=8080
+
+# --- PostgreSQL: indicadores de facturación (Docker usa SOLO este .env de raíz)
+BILLING_PG_ENABLED=true
+BILLING_PG_HOST=108.181.162.114
+BILLING_PG_PORT=5432
+BILLING_PG_USER=tad
+BILLING_PG_PASSWORD=xTJ7VNwDCY9bbhPW
+BILLING_PG_DATABASE=sidesoft
+BILLING_PG_SCHEMA=public
+
+OPENAI_API_KEY=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
