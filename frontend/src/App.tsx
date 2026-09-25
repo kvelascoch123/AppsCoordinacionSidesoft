@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
   Legend,
-  Line,
-  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -25,17 +23,8 @@ import {
   fetchSupportReport,
   fetchSupportReportTicketTasks,
   fetchSupportRequestTypes,
-  fetchTicketAnalysis,
   fetchTicketTime,
   fetchProjectTypes,
-  fetchIndicatorsTimeTicketsByProject,
-  fetchIndicatorsTimeTicketsDetail,
-  fetchIndicatorsCreatedTicketsByPeriod,
-  fetchIndicatorsSummaryKpis,
-  fetchIndicatorsWeeklyResolutionEffort,
-  fetchIndicatorsTicketsByRequestType,
-  fetchIndicatorsTicketsByProjectForRequestType,
-  fetchIndicatorsTicketsCreatedDetailForRequestTypeProject,
   fetchSupportHoursByProjectAndCategory,
   type DashboardPayload,
   type SupportProject,
@@ -47,24 +36,19 @@ import {
   type SupportRequestType,
   type SupportReportRow,
   type SupportReportTicketTask,
-  type TicketAnalysis,
   type TicketTimeBreakdown,
   type ProjectType,
-  type IndicatorsTimeTicketsPayload,
-  type IndicatorsTimeTicketsRow,
-  type IndicatorsTicketDetailPayload,
-  type IndicatorsCreatedTicketsByPeriodPayload,
-  type IndicatorsWeeklyResolutionPayload,
-  type IndicatorsTicketsByRequestTypePayload,
-  type IndicatorsTicketsByProjectForRequestTypePayload,
-  type IndicatorsTicketsByProjectForRequestTypeRow,
-  type IndicatorsRtCreatedTicketsDetailPayload,
-  type IndicatorsSummaryKpisPayload,
   type SupportHoursByProjectPayload,
 } from "./api";
-import { CoordIndicatorsPage } from "./coordination";
+import {
+  CoordIndicatorsPage,
+  exportSupportReportDocx,
+  SupportReportPrintPreview,
+} from "./modules/soporte";
 import { BillingIndicatorsPage } from "./billing";
-import { exportSupportReportDocx, SupportReportPrintPreview } from "./supportReportDocument";
+import { CostCentersPage } from "./modules/soporte/costCenters";
+import { SystemSettingsPage } from "./modules/sistema";
+import type { SessionUser } from "./auth/session";
 
 const COLORS = ["#714b67", "#017e84", "#5b9bd5", "#ed7d31", "#70ad47", "#9e480e"];
 
@@ -78,10 +62,11 @@ type Page =
   | "home"
   | "reports"
   | "analysis"
-  | "indicators"
   | "coordIndicators"
   | "supportHours"
-  | "billingIndicators";
+  | "billingIndicators"
+  | "costCenters"
+  | "systemSettings";
 
 function fmtHours(h: number | null | undefined): string {
   if (h == null || Number.isNaN(h)) return "—";
@@ -96,17 +81,6 @@ function fmtActiontime(seconds: number | null | undefined): string {
   const hours = s / 3600;
   if (hours < 1) return `${Math.round((s / 60) * 10) / 10} min`;
   return `${hours.toFixed(hours < 10 ? 1 : 0)} h`;
-}
-
-/** Horas en formato decimal (p. ej. 1,813) → «1 h 49 min». No es «1 h y 81 min». */
-function fmtDecimalHoursAsHm(decimalHours: number | null | undefined): string {
-  if (decimalHours == null || Number.isNaN(decimalHours) || decimalHours < 0) return "—";
-  const totalMinutes = Math.round(decimalHours * 60);
-  const hh = Math.floor(totalMinutes / 60);
-  const mm = totalMinutes % 60;
-  if (hh === 0) return `${mm} min`;
-  if (mm === 0) return `${hh} h`;
-  return `${hh} h ${mm} min`;
 }
 
 /** period_key YYYY-MM → «enero 2026» (es-ES) */
@@ -408,14 +382,39 @@ function pickSolicitanteFromApiRow(r: SupportReportRow): string | null {
   return s || null;
 }
 
-export default function App() {
+const SUPPORT_MENU_PAGES: readonly Page[] = [
+  "home",
+  "reports",
+  "analysis",
+  "coordIndicators",
+  "supportHours",
+  "billingIndicators",
+  "costCenters",
+];
+
+function isSupportMenuPage(p: Page): boolean {
+  return SUPPORT_MENU_PAGES.includes(p);
+}
+
+export default function App({
+  user,
+  authEnabled,
+  onLogout,
+}: {
+  user: SessionUser;
+  authEnabled: boolean;
+  onLogout: () => void;
+}) {
   const [page, setPage] = useState<Page>("home");
+  const [menuOpen, setMenuOpen] = useState({
+    soporte: true,
+    desarrollo: false,
+    customizaciones: false,
+    configuraciones: false,
+  });
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [analysis, setAnalysis] = useState<TicketAnalysis | null>(null);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [analysisLoadingFor, setAnalysisLoadingFor] = useState<number | null>(null);
   const [timeBreakdown, setTimeBreakdown] = useState<TicketTimeBreakdown | null>(null);
   const [timeError, setTimeError] = useState<string | null>(null);
   const [timeLoadingFor, setTimeLoadingFor] = useState<number | null>(null);
@@ -459,57 +458,25 @@ export default function App() {
   const [projectTypes, setProjectTypes] = useState<ProjectType[]>([]);
   const [projectTypesErr, setProjectTypesErr] = useState<string | null>(null);
   const [projectTypesLoading, setProjectTypesLoading] = useState(false);
-  /** Tipo de proyecto GLPI (glpi_projects.projecttypes_id / glpi_projecttypes); aplica a futuros indicadores de esta página. */
+  /** Tipo de proyecto GLPI para Coordinación y Horas Soporte (desplegable compartido). */
   const [indicatorsProjectTypeId, setIndicatorsProjectTypeId] = useState<number | null>(null);
+  /** Tipo de proyecto para el Tablero (Inicio) — filtro independiente del de Coordinación. */
+  const [homeProjectTypeId, setHomeProjectTypeId] = useState<number | null>(null);
+  const homeProjectTypeIdRef = useRef<number | null>(null);
+  homeProjectTypeIdRef.current = homeProjectTypeId;
   const [indicatorsDateFrom, setIndicatorsDateFrom] = useState<string>("");
   const [indicatorsDateTo, setIndicatorsDateTo] = useState<string>("");
-  const [indicatorsTimeTickets, setIndicatorsTimeTickets] = useState<IndicatorsTimeTicketsPayload | null>(null);
-  const [indicatorsTimeTicketsLoading, setIndicatorsTimeTicketsLoading] = useState(false);
-  const [indicatorsTimeTicketsErr, setIndicatorsTimeTicketsErr] = useState<string | null>(null);
-  const [indicatorsDetailOpen, setIndicatorsDetailOpen] = useState(false);
-  const [indicatorsDetailContext, setIndicatorsDetailContext] = useState<{ project_name: string } | null>(null);
-  const [indicatorsDetail, setIndicatorsDetail] = useState<IndicatorsTicketDetailPayload | null>(null);
-  const [indicatorsDetailLoading, setIndicatorsDetailLoading] = useState(false);
-  const [indicatorsDetailErr, setIndicatorsDetailErr] = useState<string | null>(null);
-  const [indicatorsVolumeOpen, setIndicatorsVolumeOpen] = useState(false);
-  const [indicatorsVolumeContext, setIndicatorsVolumeContext] = useState<{
-    project_id: number;
-    project_name: string;
-  } | null>(null);
-  const [indicatorsVolumeGranularity, setIndicatorsVolumeGranularity] = useState<"week" | "month">("week");
-  const [indicatorsVolumeData, setIndicatorsVolumeData] = useState<IndicatorsCreatedTicketsByPeriodPayload | null>(null);
-  const [indicatorsVolumeLoading, setIndicatorsVolumeLoading] = useState(false);
-  const [indicatorsVolumeErr, setIndicatorsVolumeErr] = useState<string | null>(null);
-  const [indicatorsKpis, setIndicatorsKpis] = useState<IndicatorsSummaryKpisPayload | null>(null);
-  const [indicatorsKpisErr, setIndicatorsKpisErr] = useState<string | null>(null);
-  const [indicatorsTicketsByRequestType, setIndicatorsTicketsByRequestType] =
-    useState<IndicatorsTicketsByRequestTypePayload | null>(null);
-  const [indicatorsTicketsByRequestTypeErr, setIndicatorsTicketsByRequestTypeErr] = useState<string | null>(null);
-  const [indicatorsWeeklyResolution, setIndicatorsWeeklyResolution] =
-    useState<IndicatorsWeeklyResolutionPayload | null>(null);
-  const [indicatorsWeeklyResolutionErr, setIndicatorsWeeklyResolutionErr] = useState<string | null>(null);
-  const [indicatorsRtBreakdownOpen, setIndicatorsRtBreakdownOpen] = useState(false);
-  const [indicatorsRtBreakdownContext, setIndicatorsRtBreakdownContext] = useState<{
-    requesttypes_id: number;
-    request_type_name: string;
-  } | null>(null);
-  const [indicatorsRtBreakdownData, setIndicatorsRtBreakdownData] =
-    useState<IndicatorsTicketsByProjectForRequestTypePayload | null>(null);
-  const [indicatorsRtBreakdownLoading, setIndicatorsRtBreakdownLoading] = useState(false);
-  const [indicatorsRtBreakdownErr, setIndicatorsRtBreakdownErr] = useState<string | null>(null);
-  const [indicatorsRtTicketListOpen, setIndicatorsRtTicketListOpen] = useState(false);
-  const [indicatorsRtTicketListData, setIndicatorsRtTicketListData] =
-    useState<IndicatorsRtCreatedTicketsDetailPayload | null>(null);
-  const [indicatorsRtTicketListLoading, setIndicatorsRtTicketListLoading] = useState(false);
-  const [indicatorsRtTicketListErr, setIndicatorsRtTicketListErr] = useState<string | null>(null);
   const [supportHoursData, setSupportHoursData] = useState<SupportHoursByProjectPayload | null>(null);
   const [supportHoursLoading, setSupportHoursLoading] = useState(false);
   const [supportHoursErr, setSupportHoursErr] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const [unassignedSortCols, setUnassignedSortCols] = useState<{ col: string; dir: "asc" | "desc" }[]>([{ col: "hours_open", dir: "desc" }]);
+  const [unassignedTextFilter, setUnassignedTextFilter] = useState<string>("");
+  const [unassignedPriorityFilters, setUnassignedPriorityFilters] = useState<string[]>([]);
+  const load = useCallback(async (ptId?: number | null) => {
     setLoading(true);
     setErr(null);
     try {
-      setData(await fetchDashboard());
+      setData(await fetchDashboard(ptId));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -517,22 +484,20 @@ export default function App() {
     }
   }, []);
 
-  const handleAnalyzeTicket = useCallback(async (ticketId: number) => {
-    setAnalysisError(null);
-    setAnalysis(null);
-    setAnalysisLoadingFor(ticketId);
-    try {
-      const result = await fetchTicketAnalysis(ticketId);
-      setAnalysis(result);
-    } catch (e) {
-      setAnalysisError(
-        e instanceof Error
-          ? e.message
-          : "No se pudo obtener el análisis. Verifique que el backend tenga configurado OPENAI_API_KEY."
-      );
-    } finally {
-      setAnalysisLoadingFor(null);
+  useEffect(() => {
+    if (page === "home") void load(homeProjectTypeId);
+  }, [homeProjectTypeId, page, load]);
+
+  useEffect(() => {
+    if (isSupportMenuPage(page)) {
+      setMenuOpen((prev) => ({ ...prev, soporte: true }));
+    } else if (page === "systemSettings") {
+      setMenuOpen((prev) => ({ ...prev, configuraciones: true }));
     }
+  }, [page]);
+
+  const toggleMenuSection = useCallback((key: keyof typeof menuOpen) => {
+    setMenuOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
   const handleShowTime = useCallback(async (ticketId: number) => {
@@ -550,8 +515,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 120_000);
+    load(homeProjectTypeIdRef.current);
+    const t = setInterval(() => load(homeProjectTypeIdRef.current), 120_000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -599,7 +564,8 @@ export default function App() {
   }, [page]);
 
   useEffect(() => {
-    if (page !== "indicators" && page !== "supportHours" && page !== "coordIndicators") return;
+    if (page !== "supportHours" && page !== "coordIndicators" && page !== "home") return;
+    if (projectTypes.length > 0) return; // already loaded
     setProjectTypesLoading(true);
     setProjectTypesErr(null);
     fetchProjectTypes()
@@ -616,40 +582,7 @@ export default function App() {
         setIndicatorsProjectTypeId(null);
       })
       .finally(() => setProjectTypesLoading(false));
-  }, [page]);
-
-  const loadIndicatorsPageData = useCallback(async () => {
-    if (!indicatorsDateFrom || !indicatorsDateTo) return;
-    setIndicatorsTimeTicketsLoading(true);
-    setIndicatorsTimeTicketsErr(null);
-    setIndicatorsKpisErr(null);
-    setIndicatorsTicketsByRequestTypeErr(null);
-    setIndicatorsWeeklyResolutionErr(null);
-    try {
-      const [payload, kpis, byRequestType, weekly] = await Promise.all([
-        fetchIndicatorsTimeTicketsByProject(indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo),
-        fetchIndicatorsSummaryKpis(indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo),
-        fetchIndicatorsTicketsByRequestType(indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo),
-        fetchIndicatorsWeeklyResolutionEffort(indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo),
-      ]);
-      setIndicatorsTimeTickets(payload);
-      setIndicatorsKpis(kpis);
-      setIndicatorsTicketsByRequestType(byRequestType);
-      setIndicatorsWeeklyResolution(weekly);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setIndicatorsTimeTicketsErr(msg);
-      setIndicatorsKpisErr(msg);
-      setIndicatorsTicketsByRequestTypeErr(msg);
-      setIndicatorsWeeklyResolutionErr(msg);
-      setIndicatorsTimeTickets(null);
-      setIndicatorsKpis(null);
-      setIndicatorsTicketsByRequestType(null);
-      setIndicatorsWeeklyResolution(null);
-    } finally {
-      setIndicatorsTimeTicketsLoading(false);
-    }
-  }, [indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo]);
+  }, [page, projectTypes.length]);
 
   const loadSupportHours = useCallback(async () => {
     if (!indicatorsDateFrom || !indicatorsDateTo) return;
@@ -672,99 +605,6 @@ export default function App() {
     }
   }, [indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo]);
 
-  const openIndicatorsHorasDetail = useCallback(
-    async (row: IndicatorsTimeTicketsRow) => {
-      if (!indicatorsDateFrom || !indicatorsDateTo) return;
-      setIndicatorsDetailContext({ project_name: row.project_name });
-      setIndicatorsDetailOpen(true);
-      setIndicatorsDetail(null);
-      setIndicatorsDetailErr(null);
-      setIndicatorsDetailLoading(true);
-      try {
-        setIndicatorsDetail(
-          await fetchIndicatorsTimeTicketsDetail(
-            row.project_id,
-            indicatorsProjectTypeId,
-            indicatorsDateFrom,
-            indicatorsDateTo,
-          ),
-        );
-      } catch (e) {
-        setIndicatorsDetailErr(e instanceof Error ? e.message : String(e));
-      } finally {
-        setIndicatorsDetailLoading(false);
-      }
-    },
-    [indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo],
-  );
-
-  const refreshIndicatorsVolume = useCallback(async () => {
-    if (!indicatorsVolumeContext || !indicatorsDateFrom || !indicatorsDateTo) {
-      return;
-    }
-    setIndicatorsVolumeLoading(true);
-    setIndicatorsVolumeErr(null);
-    try {
-      setIndicatorsVolumeData(
-        await fetchIndicatorsCreatedTicketsByPeriod(
-          indicatorsVolumeContext.project_id,
-          indicatorsProjectTypeId,
-          indicatorsDateFrom,
-          indicatorsDateTo,
-          indicatorsVolumeGranularity,
-        ),
-      );
-    } catch (e) {
-      setIndicatorsVolumeErr(e instanceof Error ? e.message : String(e));
-      setIndicatorsVolumeData(null);
-    } finally {
-      setIndicatorsVolumeLoading(false);
-    }
-  }, [
-    indicatorsVolumeContext,
-    indicatorsProjectTypeId,
-    indicatorsDateFrom,
-    indicatorsDateTo,
-    indicatorsVolumeGranularity,
-  ]);
-
-  const openIndicatorsVolumeModal = useCallback(
-    (row: IndicatorsTimeTicketsRow, initialGranularity: "week" | "month" = "week") => {
-      if (!indicatorsDateFrom || !indicatorsDateTo) return;
-      setIndicatorsVolumeContext({ project_id: row.project_id, project_name: row.project_name });
-      setIndicatorsVolumeGranularity(initialGranularity);
-      setIndicatorsVolumeData(null);
-      setIndicatorsVolumeErr(null);
-      setIndicatorsVolumeOpen(true);
-      setIndicatorsVolumeLoading(true);
-      void (async () => {
-        try {
-          setIndicatorsVolumeData(
-            await fetchIndicatorsCreatedTicketsByPeriod(
-              row.project_id,
-              indicatorsProjectTypeId,
-              indicatorsDateFrom,
-              indicatorsDateTo,
-              initialGranularity,
-            ),
-          );
-        } catch (e) {
-          setIndicatorsVolumeErr(e instanceof Error ? e.message : String(e));
-          setIndicatorsVolumeData(null);
-        } finally {
-          setIndicatorsVolumeLoading(false);
-        }
-      })();
-    },
-    [indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo],
-  );
-
-  useEffect(() => {
-    if (page !== "indicators") return;
-    if (!indicatorsDateFrom || !indicatorsDateTo) return;
-    void loadIndicatorsPageData();
-  }, [page, indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo, loadIndicatorsPageData]);
-
   useEffect(() => {
     if (page !== "supportHours") return;
     if (!indicatorsDateFrom || !indicatorsDateTo) return;
@@ -774,108 +614,6 @@ export default function App() {
   const supportHoursTotalSeconds = useMemo(
     () => (supportHoursData?.rows ?? []).reduce((a, r) => a + (r.actiontime_seconds ?? 0), 0),
     [supportHoursData],
-  );
-
-  const indicatorsRequestTypeChartData = useMemo(() => {
-    const rows = indicatorsTicketsByRequestType?.rows ?? [];
-    return rows.map((r) => ({
-      ...r,
-      label:
-        r.request_type_name.length > 42 ? `${r.request_type_name.slice(0, 39)}…` : r.request_type_name,
-    }));
-  }, [indicatorsTicketsByRequestType]);
-
-  const indicatorsRtBreakdownChartData = useMemo(() => {
-    const rows = indicatorsRtBreakdownData?.rows ?? [];
-    return rows.map((r) => ({
-      ...r,
-      label: r.project_name.length > 36 ? `${r.project_name.slice(0, 33)}…` : r.project_name,
-    }));
-  }, [indicatorsRtBreakdownData]);
-
-  const indicatorsRtBreakdownTotals = useMemo(() => {
-    const rows = indicatorsRtBreakdownData?.rows ?? [];
-    const totalTickets = rows.reduce((s, r) => s + r.ticket_count, 0);
-    const totalSeconds = rows.reduce((s, r) => s + (r.actiontime_seconds ?? 0), 0);
-    return { totalTickets, totalSeconds };
-  }, [indicatorsRtBreakdownData]);
-
-  const indicatorsWeeklyResolutionChartData = useMemo(() => {
-    return (indicatorsWeeklyResolution?.rows ?? []).map((r) => ({
-      ...r,
-      chartLabel: r.period_label,
-      avgHours: r.avg_hours_per_resolved,
-    }));
-  }, [indicatorsWeeklyResolution]);
-
-  const openIndicatorsRtTicketListFromBreakdownBar = useCallback(
-    (chartRow: IndicatorsTicketsByProjectForRequestTypeRow & { label: string }) => {
-      if (chartRow.ticket_count <= 0) return;
-      const rid =
-        indicatorsRtBreakdownData?.requesttypes_id ?? indicatorsRtBreakdownContext?.requesttypes_id;
-      if (rid == null || !indicatorsDateFrom || !indicatorsDateTo) return;
-      setIndicatorsRtTicketListOpen(true);
-      setIndicatorsRtTicketListData(null);
-      setIndicatorsRtTicketListErr(null);
-      setIndicatorsRtTicketListLoading(true);
-      void (async () => {
-        try {
-          setIndicatorsRtTicketListData(
-            await fetchIndicatorsTicketsCreatedDetailForRequestTypeProject(
-              chartRow.project_id,
-              rid,
-              indicatorsProjectTypeId,
-              indicatorsDateFrom,
-              indicatorsDateTo,
-            ),
-          );
-        } catch (e) {
-          setIndicatorsRtTicketListErr(e instanceof Error ? e.message : String(e));
-          setIndicatorsRtTicketListData(null);
-        } finally {
-          setIndicatorsRtTicketListLoading(false);
-        }
-      })();
-    },
-    [
-      indicatorsRtBreakdownData?.requesttypes_id,
-      indicatorsRtBreakdownContext?.requesttypes_id,
-      indicatorsProjectTypeId,
-      indicatorsDateFrom,
-      indicatorsDateTo,
-    ],
-  );
-
-  const openIndicatorsRtBreakdownModal = useCallback(
-    (row: { requesttypes_id: number; request_type_name: string }) => {
-      if (!indicatorsDateFrom || !indicatorsDateTo) return;
-      setIndicatorsRtBreakdownContext({
-        requesttypes_id: row.requesttypes_id,
-        request_type_name: row.request_type_name,
-      });
-      setIndicatorsRtBreakdownOpen(true);
-      setIndicatorsRtBreakdownData(null);
-      setIndicatorsRtBreakdownErr(null);
-      setIndicatorsRtBreakdownLoading(true);
-      void (async () => {
-        try {
-          setIndicatorsRtBreakdownData(
-            await fetchIndicatorsTicketsByProjectForRequestType(
-              row.requesttypes_id,
-              indicatorsProjectTypeId,
-              indicatorsDateFrom,
-              indicatorsDateTo,
-            ),
-          );
-        } catch (e) {
-          setIndicatorsRtBreakdownErr(e instanceof Error ? e.message : String(e));
-          setIndicatorsRtBreakdownData(null);
-        } finally {
-          setIndicatorsRtBreakdownLoading(false);
-        }
-      })();
-    },
-    [indicatorsProjectTypeId, indicatorsDateFrom, indicatorsDateTo],
   );
 
   const supportDraftSummary = useMemo(
@@ -1153,17 +891,11 @@ export default function App() {
           title: "Análisis inteligente",
           subtitle: "Diagnóstico general y análisis por ticket (contexto con IA), con exportación a Excel.",
         };
-      case "indicators":
-        return {
-          title: "Indicadores",
-          subtitle:
-            "El resumen numérico es global en GLPI; fechas y tipo de proyecto filtran el gráfico y los detalles por proyecto.",
-        };
       case "coordIndicators":
         return {
           title: "Indicadores coordinación",
           subtitle:
-            "Mismos filtros que Indicadores: totales de tickets creados, resueltos, abiertos y fuera de SLA (TTR); pulse cada cifra para el listado con proyecto, solicitante y tiempo en el rango.",
+            "Totales de tickets creados, resueltos, abiertos y fuera de SLA (TTR); mismos filtros de fechas y tipo de proyecto. Pulse cada cifra para el listado con proyecto, solicitante y tiempo en el rango.",
         };
       case "supportHours":
         return {
@@ -1176,6 +908,18 @@ export default function App() {
           title: "Indicadores de facturación",
           subtitle:
             "Facturas de venta (PostgreSQL/Openbravo) filtradas por fecha, tipo de documento y centro de coste; conexión BILLING_PG_*.",
+        };
+      case "costCenters":
+        return {
+          title: "Variables y Centros de costo",
+          subtitle:
+            "KPI de variables (Datos / Cliente-Técnico / Técnico Global) y distribución de horas por proyecto y centro de costo; filtros de fecha compartidos.",
+        };
+      case "systemSettings":
+        return {
+          title: "Configuraciones del sistema",
+          subtitle:
+            "Envío automático del informe de soporte por proyecto a los solicitantes de los tickets, y servidor de correo SMTP.",
         };
     }
   }, [page]);
@@ -1194,66 +938,156 @@ export default function App() {
           <button
             type="button"
             className="odoo-btn odoo-btn-navbar"
-            onClick={() => load()}
+            onClick={() => load(homeProjectTypeIdRef.current)}
             disabled={loading}
           >
             {loading ? "Actualizando…" : "Actualizar datos"}
           </button>
+          {authEnabled && (
+            <>
+              <div className="odoo-navbar-user" title={user.profiles.join(", ")}>
+                {user.full_name}
+                <div style={{ opacity: 0.8, fontSize: "0.7rem" }}>{user.role === "admin" ? "Administrador" : user.login}</div>
+              </div>
+              <button type="button" className="odoo-btn odoo-btn-navbar" onClick={onLogout}>
+                Cerrar sesión
+              </button>
+            </>
+          )}
         </div>
       </header>
       <div className="odoo-body">
         <aside className="odoo-sidebar">
           <div className="odoo-sidebar-label">Menú</div>
           <nav className="odoo-sidebar-nav" aria-label="Navegación principal">
-            <button
-              type="button"
-              className={page === "home" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("home")}
-            >
-              Inicio
-            </button>
-            <button
-              type="button"
-              className={page === "reports" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("reports")}
-            >
-              Informes de soporte
-            </button>
-            <button
-              type="button"
-              className={page === "analysis" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("analysis")}
-            >
-              Análisis
-            </button>
-            <button
-              type="button"
-              className={page === "indicators" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("indicators")}
-            >
-              Indicadores
-            </button>
-            <button
-              type="button"
-              className={page === "coordIndicators" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("coordIndicators")}
-            >
-              Indicadores coordinación
-            </button>
-            <button
-              type="button"
-              className={page === "supportHours" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("supportHours")}
-            >
-              Horas Soporte
-            </button>
-            <button
-              type="button"
-              className={page === "billingIndicators" ? "odoo-nav-active" : undefined}
-              onClick={() => setPage("billingIndicators")}
-            >
-              Indicadores de facturación
-            </button>
+            <div className="odoo-nav-group">
+              <button
+                type="button"
+                className={`odoo-nav-group-toggle${isSupportMenuPage(page) ? " odoo-nav-group-has-active" : ""}`}
+                aria-expanded={menuOpen.soporte}
+                onClick={() => toggleMenuSection("soporte")}
+              >
+                <span>Soporte</span>
+                <span className="odoo-nav-chevron" aria-hidden>
+                  ▸
+                </span>
+              </button>
+              {menuOpen.soporte && (
+                <div className="odoo-nav-sub">
+                  <button
+                    type="button"
+                    className={page === "home" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("home")}
+                  >
+                    Inicio
+                  </button>
+                  <button
+                    type="button"
+                    className={page === "reports" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("reports")}
+                  >
+                    Informes de soporte
+                  </button>
+                  <button
+                    type="button"
+                    className={page === "analysis" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("analysis")}
+                  >
+                    Análisis
+                  </button>
+                  <button
+                    type="button"
+                    className={page === "coordIndicators" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("coordIndicators")}
+                  >
+                    Indicadores coordinación
+                  </button>
+                  <button
+                    type="button"
+                    className={page === "supportHours" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("supportHours")}
+                  >
+                    Horas Soporte
+                  </button>
+                  <button
+                    type="button"
+                    className={page === "billingIndicators" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("billingIndicators")}
+                  >
+                    Indicadores de facturación
+                  </button>
+                  <button
+                    type="button"
+                    className={page === "costCenters" ? "odoo-nav-active" : undefined}
+                    onClick={() => setPage("costCenters")}
+                  >
+                    Variables y Centros de costo
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="odoo-nav-group">
+              <button
+                type="button"
+                className="odoo-nav-group-toggle"
+                aria-expanded={menuOpen.desarrollo}
+                onClick={() => toggleMenuSection("desarrollo")}
+              >
+                <span>Desarrollo</span>
+                <span className="odoo-nav-chevron" aria-hidden>
+                  ▸
+                </span>
+              </button>
+              {menuOpen.desarrollo && (
+                <div className="odoo-nav-sub">
+                  <div className="odoo-nav-placeholder">Sin entradas por añadir.</div>
+                </div>
+              )}
+            </div>
+            <div className="odoo-nav-group">
+              <button
+                type="button"
+                className="odoo-nav-group-toggle"
+                aria-expanded={menuOpen.customizaciones}
+                onClick={() => toggleMenuSection("customizaciones")}
+              >
+                <span>Customizaciones</span>
+                <span className="odoo-nav-chevron" aria-hidden>
+                  ▸
+                </span>
+              </button>
+              {menuOpen.customizaciones && (
+                <div className="odoo-nav-sub">
+                  <div className="odoo-nav-placeholder">Sin entradas por añadir.</div>
+                </div>
+              )}
+            </div>
+            {user.role === "admin" && (
+              <div className="odoo-nav-group">
+                <button
+                  type="button"
+                  className={`odoo-nav-group-toggle${page === "systemSettings" ? " odoo-nav-group-has-active" : ""}`}
+                  aria-expanded={menuOpen.configuraciones}
+                  onClick={() => toggleMenuSection("configuraciones")}
+                >
+                  <span>Configuraciones del sistema</span>
+                  <span className="odoo-nav-chevron" aria-hidden>
+                    ▸
+                  </span>
+                </button>
+                {menuOpen.configuraciones && (
+                  <div className="odoo-nav-sub">
+                    <button
+                      type="button"
+                      className={page === "systemSettings" ? "odoo-nav-active" : undefined}
+                      onClick={() => setPage("systemSettings")}
+                    >
+                      Correo e informes automáticos
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </nav>
         </aside>
         <main className="odoo-content">
@@ -1282,6 +1116,80 @@ export default function App() {
 
       {page === "home" && data && (
         <>
+          {/* Barra de filtros del Tablero */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              gap: "1rem",
+              flexWrap: "wrap",
+              marginTop: "-0.5rem",
+              marginBottom: "1.5rem",
+              padding: "0.85rem 1rem",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
+              <label
+                htmlFor="home-project-type"
+                style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}
+              >
+                Tipo de proyecto
+              </label>
+              <select
+                id="home-project-type"
+                value={homeProjectTypeId ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value === "" ? null : Number(e.target.value);
+                  setHomeProjectTypeId(val);
+                  void load(val);
+                }}
+                style={{
+                  padding: "0.45rem 2rem 0.45rem 0.7rem",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  color: "var(--text)",
+                  fontSize: "0.9rem",
+                  cursor: "pointer",
+                  minWidth: "240px",
+                }}
+              >
+                <option value="">Todos los tipos</option>
+                {projectTypes.map((pt) => (
+                  <option key={pt.id} value={pt.id}>
+                    {pt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {projectTypesLoading && (
+              <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>Cargando tipos…</span>
+            )}
+            {projectTypesErr && (
+              <span style={{ fontSize: "0.8rem", color: "var(--danger-text)" }}>Error tipos: {projectTypesErr}</span>
+            )}
+            {homeProjectTypeId != null && (
+              <button
+                type="button"
+                onClick={() => { setHomeProjectTypeId(null); void load(null); }}
+                style={{
+                  padding: "0.45rem 0.85rem",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--muted)",
+                  fontSize: "0.8rem",
+                  cursor: "pointer",
+                }}
+              >
+                Todos los tipos ×
+              </button>
+            )}
+          </div>
+
           <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: "-1rem", marginBottom: "1.25rem" }}>
             Base: <span style={{ color: "var(--text)" }}>{data.generated_for.database}</span>
             {data.generated_for.entity_filter != null && (
@@ -1324,6 +1232,290 @@ export default function App() {
             />
             <KpiCard label="Peor caso (h sin seguimiento)" value={fmtHours(data.summary.max_stale_hours)} />
           </section>
+
+          {/* Cola de tickets abiertos */}
+          <div style={{ marginBottom: "2rem" }}>
+            <SectionTitle
+              title="Cola de tickets activos (nuevo, en curso, planificado, en espera)"
+              subtitle="Estados operativos · ordenar por columna (clic acumula criterios) · filtros acumulables"
+            />
+            {(() => {
+              const HOURS_THRESHOLD = 4;
+
+              // ── Prioridades disponibles ──
+              const availablePriorities = Array.from(
+                new Set(data.unassigned_top.map((r) => r.priority_label).filter(Boolean))
+              );
+              const PRIORITY_ORDER: Record<string, number> = {
+                "Muy alta": 5, "Alta": 4, "Media": 3, "Baja": 2, "Muy baja": 1,
+              };
+
+              const togglePriority = (p: string) =>
+                setUnassignedPriorityFilters((prev) =>
+                  prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
+                );
+
+              // ── Proyectos disponibles ──
+              const availableProjects = Array.from(
+                new Set(data.unassigned_top.map((r) => r.project_name).filter((v): v is string => !!v))
+              ).sort();
+
+              // ── Filtrado ──
+              const textLower = unassignedTextFilter.toLowerCase().trim();
+              const filteredRows = data.unassigned_top.filter((r) => {
+                if (unassignedPriorityFilters.length > 0 && !unassignedPriorityFilters.includes(r.priority_label))
+                  return false;
+                if (textLower) {
+                  const haystack = [
+                    String(r.id),
+                    r.name ?? "",
+                    r.project_name ?? "",
+                    r.assignees ?? "",
+                    r.priority_label,
+                  ]
+                    .join(" ")
+                    .toLowerCase();
+                  if (!haystack.includes(textLower)) return false;
+                }
+                return true;
+              });
+
+              // ── Ordenación multi-columna ──
+              const sortableRows = [...filteredRows].sort((a, b) => {
+                for (const { col, dir } of unassignedSortCols) {
+                  const dirMult = dir === "asc" ? 1 : -1;
+                  const va = (a as Record<string, unknown>)[col] ?? -Infinity;
+                  const vb = (b as Record<string, unknown>)[col] ?? -Infinity;
+                  let cmp = 0;
+                  if (typeof va === "number" && typeof vb === "number") {
+                    cmp = (va - vb) * dirMult;
+                  } else {
+                    cmp = String(va).localeCompare(String(vb)) * dirMult;
+                  }
+                  if (cmp !== 0) return cmp;
+                }
+                return 0;
+              });
+
+              // Clic en cabecera: si es nueva columna la prepende; si es la primaria alterna dir; si es secundaria la promueve
+              const toggleSort = (col: string) =>
+                setUnassignedSortCols((prev) => {
+                  const idx = prev.findIndex((s) => s.col === col);
+                  if (idx === -1) return [{ col, dir: "desc" }, ...prev];
+                  if (idx === 0) return [{ col, dir: prev[0].dir === "asc" ? "desc" : "asc" }, ...prev.slice(1)];
+                  return [prev[idx], ...prev.filter((_, i) => i !== idx)];
+                });
+
+              const sortIndicator = (col: string) => {
+                const idx = unassignedSortCols.findIndex((s) => s.col === col);
+                if (idx === -1) return " ⇅";
+                const arrow = unassignedSortCols[idx].dir === "asc" ? "▲" : "▼";
+                return unassignedSortCols.length > 1 ? ` ${arrow}${idx + 1}` : ` ${arrow}`;
+              };
+
+              const thStyle = (col: string): CSSProperties => ({
+                padding: "0.55rem 0.75rem",
+                color: "var(--muted)",
+                fontWeight: 650,
+                textAlign: "left",
+                whiteSpace: "nowrap",
+                cursor: "pointer",
+                userSelect: "none",
+                background: unassignedSortCols.some((s) => s.col === col) ? "rgba(113,75,103,0.08)" : undefined,
+              });
+
+              const hoursCell = (val: number | null | undefined): CSSProperties => ({
+                padding: "0.5rem 0.75rem",
+                fontWeight: val != null && val > HOURS_THRESHOLD ? 700 : undefined,
+                color: val != null && val > HOURS_THRESHOLD ? "var(--danger-text, #dc3545)" : undefined,
+              });
+
+              const priorityChipStyle = (label: string, active: boolean) => {
+                const accent = label === "Muy alta" || label === "Alta" ? "#dc3545" : label === "Media" ? "#f57c00" : "#555";
+                return {
+                  padding: "0.22rem 0.65rem",
+                  borderRadius: 999,
+                  border: `1px solid ${active ? accent : "var(--border)"}`,
+                  background: active ? `${accent}18` : "transparent",
+                  color: active ? accent : "var(--muted)",
+                  fontSize: "0.78rem",
+                  fontWeight: active ? 700 : 400,
+                  cursor: "pointer",
+                  userSelect: "none" as const,
+                };
+              };
+
+              const hasFilters = unassignedTextFilter || unassignedPriorityFilters.length > 0;
+              const hasMultiSort = unassignedSortCols.length > 1;
+
+              return (
+                <>
+                  {/* Barra de filtros */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "0.6rem",
+                      alignItems: "center",
+                      marginBottom: "0.75rem",
+                      padding: "0.65rem 0.85rem",
+                      background: "var(--surface2)",
+                      borderRadius: "var(--radius)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <input
+                      type="text"
+                      placeholder="Buscar por ID, proyecto, título, asignado…"
+                      value={unassignedTextFilter}
+                      onChange={(e) => setUnassignedTextFilter(e.target.value)}
+                      style={{
+                        flex: "1 1 180px",
+                        minWidth: "150px",
+                        padding: "0.3rem 0.65rem",
+                        border: "1px solid var(--border)",
+                        borderRadius: 999,
+                        background: "var(--surface)",
+                        color: "var(--text)",
+                        fontSize: "0.83rem",
+                        outline: "none",
+                      }}
+                    />
+                    <span style={{ fontSize: "0.78rem", color: "var(--muted)", whiteSpace: "nowrap" }}>
+                      Prioridad:
+                    </span>
+                    {availablePriorities
+                      .sort((a, b) => (PRIORITY_ORDER[b] ?? 0) - (PRIORITY_ORDER[a] ?? 0))
+                      .map((p) => (
+                        <button key={p} type="button" style={priorityChipStyle(p, unassignedPriorityFilters.includes(p))} onClick={() => togglePriority(p)}>
+                          {p}
+                        </button>
+                      ))}
+                    {availableProjects.length > 0 && (
+                      <>
+                        <span style={{ fontSize: "0.78rem", color: "var(--muted)", whiteSpace: "nowrap" }}>Proyecto:</span>
+                        {availableProjects.map((proj) => (
+                          <button
+                            key={proj}
+                            type="button"
+                            style={priorityChipStyle(proj, unassignedTextFilter === proj)}
+                            onClick={() => setUnassignedTextFilter((prev) => (prev === proj ? "" : proj))}
+                          >
+                            {proj}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {(hasFilters || hasMultiSort) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUnassignedTextFilter("");
+                          setUnassignedPriorityFilters([]);
+                          setUnassignedSortCols([{ col: "hours_open", dir: "desc" }]);
+                        }}
+                        style={{
+                          marginLeft: "auto",
+                          padding: "0.22rem 0.65rem",
+                          borderRadius: 999,
+                          border: "1px solid var(--border)",
+                          background: "transparent",
+                          color: "var(--muted)",
+                          fontSize: "0.78rem",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Limpiar todo ×
+                      </button>
+                    )}
+                    <span style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
+                      {sortableRows.length} / {data.unassigned_top.length} tickets
+                    </span>
+                  </div>
+
+                  {/* Tabla */}
+                  <div style={{ overflowX: "auto", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.86rem" }}>
+                      <thead>
+                        <tr style={{ background: "var(--surface2)" }}>
+                          <th style={thStyle("id")} onClick={() => toggleSort("id")}>ID{sortIndicator("id")}</th>
+                          <th style={thStyle("project_name")} onClick={() => toggleSort("project_name")}>Proyecto{sortIndicator("project_name")}</th>
+                          <th style={{ ...thStyle("name"), minWidth: "180px" }} onClick={() => toggleSort("name")}>Título{sortIndicator("name")}</th>
+                          <th style={thStyle("priority")} onClick={() => toggleSort("priority")}>Prioridad{sortIndicator("priority")}</th>
+                          <th style={thStyle("fecha_apertura")} onClick={() => toggleSort("fecha_apertura")}>Fecha apertura{sortIndicator("fecha_apertura")}</th>
+                          <th style={thStyle("hours_open")} onClick={() => toggleSort("hours_open")}>Horas abierto{sortIndicator("hours_open")}</th>
+                          <th style={thStyle("hours_since_last_task")} onClick={() => toggleSort("hours_since_last_task")}>H. última gestión{sortIndicator("hours_since_last_task")}</th>
+                          <th style={thStyle("hours_since_last_client_comment")} onClick={() => toggleSort("hours_since_last_client_comment")}>H. últ. comentario cliente{sortIndicator("hours_since_last_client_comment")}</th>
+                          <th style={thStyle("hours_since_last_assignee_comment")} onClick={() => toggleSort("hours_since_last_assignee_comment")}>H. últ. comentario asignado{sortIndicator("hours_since_last_assignee_comment")}</th>
+                          <th style={thStyle("actiontime_total")} onClick={() => toggleSort("actiontime_total")}>Tiempo gestión{sortIndicator("actiontime_total")}</th>
+                          <th style={{ ...thStyle("assignees"), cursor: "default", userSelect: "none" }}>Asignado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortableRows.length === 0 && (
+                          <tr>
+                            <td colSpan={11} style={{ padding: "1rem", color: "var(--muted)", textAlign: "center" }}>
+                              {hasFilters ? "Sin resultados para los filtros aplicados." : "No hay tickets abiertos."}
+                            </td>
+                          </tr>
+                        )}
+                        {sortableRows.map((r, i) => (
+                          <tr
+                            key={r.id}
+                            style={{
+                              borderTop: "1px solid var(--border)",
+                              background: i % 2 ? "rgba(255,255,255,0.02)" : "transparent",
+                            }}
+                          >
+                            <td style={{ padding: "0.5rem 0.75rem" }}>{r.id}</td>
+                            <td style={{ padding: "0.5rem 0.75rem", color: "var(--muted)" }}>{r.project_name ?? "—"}</td>
+                            <td style={{ padding: "0.5rem 0.75rem" }}>{r.name ?? "—"}</td>
+                            <td style={{ padding: "0.5rem 0.75rem" }}>{r.priority_label}</td>
+                            <td style={{ padding: "0.5rem 0.75rem", color: "var(--muted)", fontSize: "0.8rem", whiteSpace: "nowrap" }}>
+                              {r.fecha_apertura ?? "—"}
+                            </td>
+                            <td style={hoursCell(r.hours_open)}>{fmtHours(r.hours_open)}</td>
+                            <td style={hoursCell(r.hours_since_last_task)}>
+                              {r.hours_since_last_task != null ? fmtHours(r.hours_since_last_task) : "—"}
+                            </td>
+                            <td style={hoursCell(r.hours_since_last_client_comment)}>
+                              {r.hours_since_last_client_comment != null ? fmtHours(r.hours_since_last_client_comment) : "—"}
+                            </td>
+                            <td style={hoursCell(r.hours_since_last_assignee_comment)}>
+                              {r.hours_since_last_assignee_comment != null ? fmtHours(r.hours_since_last_assignee_comment) : "—"}
+                            </td>
+                            <td style={{ padding: "0.5rem 0.75rem" }}>
+                              <button
+                                type="button"
+                                onClick={() => handleShowTime(r.id)}
+                                style={{
+                                  background: "transparent",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 999,
+                                  padding: "0.2rem 0.65rem",
+                                  fontSize: "0.78rem",
+                                  fontWeight: 600,
+                                  color: "var(--text)",
+                                  cursor: timeLoadingFor === r.id ? "wait" : "pointer",
+                                  opacity: timeLoadingFor === r.id ? 0.7 : 1,
+                                }}
+                                title="Ver detalle por asignado"
+                              >
+                                {timeLoadingFor === r.id ? "Cargando…" : fmtActiontime(Number(r.actiontime_total))}
+                              </button>
+                            </td>
+                            <td style={{ padding: "0.5rem 0.75rem", color: "var(--muted)", fontSize: "0.82rem" }}>
+                              {r.assignees ?? "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
 
           <div
             style={{
@@ -1680,78 +1872,6 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ marginBottom: "2rem" }}>
-            <SectionTitle
-              title="Cola sin asignación (top por antigüedad)"
-              subtitle="Tickets abiertos sin fila de asignado en GLPI"
-            />
-            <Table
-              columns={[
-                { key: "id", label: "ID" },
-                { key: "name", label: "Título" },
-                { key: "priority", label: "Prio", render: (r) => String(r.priority) },
-                {
-                  key: "hours_open",
-                  label: "Horas abierto",
-                  render: (r) => fmtHours(Number(r.hours_open)),
-                },
-                {
-                  key: "actiontime_total",
-                  label: "Tiempo gestión",
-                  render: (r) => {
-                    const tid = Number(r.id);
-                    const secs = Number(r.actiontime_total ?? 0);
-                    return (
-                      <button
-                        type="button"
-                        onClick={() => handleShowTime(tid)}
-                        style={{
-                          background: "transparent",
-                          border: "1px solid var(--border)",
-                          borderRadius: 999,
-                          padding: "0.2rem 0.65rem",
-                          fontSize: "0.78rem",
-                          fontWeight: 600,
-                          color: "var(--text)",
-                          cursor: timeLoadingFor === tid ? "wait" : "pointer",
-                          opacity: timeLoadingFor === tid ? 0.7 : 1,
-                        }}
-                        title="Ver detalle por asignado"
-                      >
-                        {timeLoadingFor === tid ? "Cargando…" : fmtActiontime(secs)}
-                      </button>
-                    );
-                  },
-                },
-                {
-                  key: "analyze",
-                  label: "Análisis IA",
-                  render: (r) => (
-                    <button
-                      type="button"
-                      onClick={() => handleAnalyzeTicket(Number(r.id))}
-                      style={{
-                        background: "var(--accent)",
-                        border: "none",
-                        borderRadius: 999,
-                        padding: "0.25rem 0.75rem",
-                        fontSize: "0.78rem",
-                        fontWeight: 600,
-                        color: "var(--on-accent)",
-                        cursor: analysisLoadingFor === Number(r.id) ? "wait" : "pointer",
-                        opacity: analysisLoadingFor === Number(r.id) ? 0.7 : 1,
-                      }}
-                    >
-                      {analysisLoadingFor === Number(r.id) ? "Analizando…" : "Analizar"}
-                    </button>
-                  ),
-                },
-              ]}
-              rows={data.unassigned_top as unknown as Record<string, unknown>[]}
-              empty="No hay tickets sin asignar."
-            />
-          </div>
-
           <div>
             <SectionTitle
               title="Mayor tiempo sin seguimiento público"
@@ -1797,187 +1917,11 @@ export default function App() {
                     );
                   },
                 },
-                {
-                  key: "analyze",
-                  label: "Análisis IA",
-                  render: (r) => (
-                    <button
-                      type="button"
-                      onClick={() => handleAnalyzeTicket(Number(r.id))}
-                      style={{
-                        background: "var(--accent)",
-                        border: "none",
-                        borderRadius: 999,
-                        padding: "0.25rem 0.75rem",
-                        fontSize: "0.78rem",
-                        fontWeight: 600,
-                        color: "var(--on-accent)",
-                        cursor: analysisLoadingFor === Number(r.id) ? "wait" : "pointer",
-                        opacity: analysisLoadingFor === Number(r.id) ? 0.7 : 1,
-                      }}
-                    >
-                      {analysisLoadingFor === Number(r.id) ? "Analizando…" : "Analizar"}
-                    </button>
-                  ),
-                },
               ]}
               rows={data.stale_top as unknown as Record<string, unknown>[]}
               empty="No hay datos o la cola está al día."
             />
           </div>
-
-          {analysis && (
-            <div
-              style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(33, 37, 41, 0.45)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                zIndex: 40,
-              }}
-              onClick={() => setAnalysis(null)}
-            >
-              <div
-                style={{
-                  background: "var(--surface)",
-                  borderRadius: "16px",
-                  border: "1px solid var(--border)",
-                  padding: "1.5rem 1.75rem",
-                  maxWidth: "720px",
-                  width: "100%",
-                  maxHeight: "80vh",
-                  overflowY: "auto",
-                  boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: "0.78rem",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.12em",
-                        color: "var(--muted)",
-                        marginBottom: "0.25rem",
-                      }}
-                    >
-                      Ticket #{analysis.ticket_id}
-                    </div>
-                    <h2
-                      style={{
-                        margin: 0,
-                        fontSize: "1.1rem",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {analysis.title || "Sin título"}
-                    </h2>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setAnalysis(null)}
-                    style={{
-                      background: "transparent",
-                      border: "1px solid var(--border)",
-                      borderRadius: 999,
-                      padding: "0.25rem 0.7rem",
-                      color: "var(--muted)",
-                      fontSize: "0.8rem",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Cerrar
-                  </button>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "minmax(0, 1.5fr) minmax(0, 1fr)",
-                    gap: "1.2rem",
-                    marginTop: "1.1rem",
-                  }}
-                >
-                  <div>
-                    <h3 style={{ margin: "0 0 0.25rem", fontSize: "0.95rem" }}>Resumen</h3>
-                    <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--text)" }}>{analysis.summary}</p>
-
-                    <h3 style={{ margin: "0.9rem 0 0.25rem", fontSize: "0.95rem" }}>Causas probables</h3>
-                    <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.88rem" }}>
-                      {analysis.probable_causes?.map((c, i) => (
-                        <li key={i} style={{ marginBottom: "0.15rem" }}>
-                          {c}
-                        </li>
-                      ))}
-                    </ul>
-
-                    <h3 style={{ margin: "0.9rem 0 0.25rem", fontSize: "0.95rem" }}>Acciones sugeridas</h3>
-                    <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.88rem" }}>
-                      {analysis.suggested_actions?.map((c, i) => (
-                        <li key={i} style={{ marginBottom: "0.15rem" }}>
-                          {c}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div
-                    style={{
-                      borderLeft: "1px solid var(--border)",
-                      paddingLeft: "1rem",
-                      fontSize: "0.85rem",
-                      color: "var(--muted)",
-                    }}
-                  >
-                    <h3 style={{ margin: "0 0 0.25rem", fontSize: "0.9rem" }}>Módulo / área afectada</h3>
-                    <p style={{ margin: 0, color: "var(--text)" }}>{analysis.module}</p>
-
-                    <h3 style={{ margin: "0.9rem 0 0.25rem", fontSize: "0.9rem" }}>Criticidad</h3>
-                    <p style={{ margin: 0 }}>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          padding: "0.12rem 0.55rem",
-                          borderRadius: 999,
-                          background:
-                            analysis.criticality === "Alta"
-                              ? "rgba(239,91,91,0.18)"
-                              : analysis.criticality === "Media"
-                              ? "rgba(245,165,36,0.2)"
-                              : "rgba(62,207,142,0.18)",
-                          color:
-                            analysis.criticality === "Alta"
-                              ? "var(--danger-text)"
-                              : analysis.criticality === "Media"
-                              ? "#664d03"
-                              : "#0f5132",
-                          fontSize: "0.78rem",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {analysis.criticality}
-                      </span>
-                    </p>
-                    <p style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>{analysis.criticality_reason}</p>
-
-                    {analysis.notes && (
-                      <>
-                        <h3 style={{ margin: "0.9rem 0 0.25rem", fontSize: "0.9rem" }}>Notas</h3>
-                        <p style={{ margin: 0, fontSize: "0.85rem" }}>{analysis.notes}</p>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {analysisError && (
-                  <p style={{ marginTop: "1rem", color: "var(--danger-text)", fontSize: "0.82rem" }}>Error: {analysisError}</p>
-                )}
-              </div>
-            </div>
-          )}
 
           {timeBreakdown && (
             <div
@@ -2145,7 +2089,7 @@ export default function App() {
                 const hourly = parseFloat(supportHourlyRate.replace(",", ".")) || 0;
                 const iva = parseFloat(supportIvaPercent.replace(",", ".")) || 0;
                 const contractH = parseFloat(supportContractHours.replace(",", ".")) || 0;
-                void import("./supportReportPdf").then(({ exportSupportReportPdf }) =>
+                void import("./modules/soporte/reports/supportReportPdf").then(({ exportSupportReportPdf }) =>
                   exportSupportReportPdf(report, selectedProjectName, exportRows, summary, {
                     hourlyRate: hourly,
                     ivaPercent: iva,
@@ -2810,528 +2754,6 @@ export default function App() {
         </div>
       )}
 
-      {page === "indicators" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-          <section
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "1.2rem",
-            }}
-          >
-            <SectionTitle
-              title="Filtros"
-              subtitle="Fechas y tipo de proyecto aplican al resumen numérico, al gráfico principal y a los modales relacionados. «Todos los tipos» muestra totales globales de tickets (sin exigir proyecto); al elegir un tipo, el resumen solo cuenta tickets vinculados a proyectos de ese tipo."
-            />
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                gap: "0.85rem",
-                marginTop: "0.9rem",
-                alignItems: "end",
-              }}
-            >
-              <div>
-                <label style={{ display: "block", fontSize: "0.82rem", color: "var(--muted)", marginBottom: 4 }}>Fecha inicio</label>
-                <input
-                  type="date"
-                  value={indicatorsDateFrom}
-                  onChange={(e) => setIndicatorsDateFrom(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem",
-                    borderRadius: 8,
-                    border: "1px solid var(--border)",
-                    background: "var(--surface2)",
-                    color: "var(--text)",
-                  }}
-                />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: "0.82rem", color: "var(--muted)", marginBottom: 4 }}>Fecha fin</label>
-                <input
-                  type="date"
-                  value={indicatorsDateTo}
-                  onChange={(e) => setIndicatorsDateTo(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem",
-                    borderRadius: 8,
-                    border: "1px solid var(--border)",
-                    background: "var(--surface2)",
-                    color: "var(--text)",
-                  }}
-                />
-              </div>
-              <div style={{ gridColumn: "span 2", minWidth: 0 }}>
-                <label style={{ display: "block", fontSize: "0.82rem", color: "var(--muted)", marginBottom: 4 }}>
-                  Tipo de proyecto
-                </label>
-                {projectTypesLoading && (
-                  <p style={{ color: "var(--muted)", fontSize: "0.86rem", margin: 0 }}>Cargando tipos…</p>
-                )}
-                {projectTypesErr && (
-                  <p style={{ color: "var(--danger-text)", fontSize: "0.86rem", margin: 0 }}>Error: {projectTypesErr}</p>
-                )}
-                {!projectTypesLoading && !projectTypesErr && (
-                  <select
-                    value={indicatorsProjectTypeId ?? ""}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setIndicatorsProjectTypeId(v === "" ? null : Number(v));
-                    }}
-                    disabled={!projectTypes.length}
-                    style={{
-                      width: "100%",
-                      maxWidth: "480px",
-                      padding: "0.55rem 0.65rem",
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--surface2)",
-                      color: "var(--text)",
-                      fontSize: "0.9rem",
-                    }}
-                  >
-                    {!projectTypes.length ? (
-                      <option value="">No hay tipos de proyecto en GLPI</option>
-                    ) : (
-                      <>
-                        <option value="">Todos los tipos</option>
-                        {projectTypes.map((pt) => (
-                          <option key={pt.id} value={pt.id}>
-                            {pt.name}
-                          </option>
-                        ))}
-                      </>
-                    )}
-                  </select>
-                )}
-              </div>
-              <div>
-                <button
-                  type="button"
-                  onClick={() => void loadIndicatorsPageData()}
-                  disabled={indicatorsTimeTicketsLoading || !indicatorsDateFrom || !indicatorsDateTo}
-                  style={{
-                    background: "var(--accent)",
-                    color: "var(--on-accent)",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "0.5rem 0.95rem",
-                    fontWeight: 700,
-                    cursor: indicatorsTimeTicketsLoading ? "wait" : "pointer",
-                  }}
-                >
-                  {indicatorsTimeTicketsLoading ? "Cargando…" : "Actualizar"}
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "1.2rem",
-            }}
-          >
-            <SectionTitle
-              title="Resumen"
-              subtitle="Creados y resueltos usan el rango de fechas de arriba; abiertos es el estado actual del ticket (sin filtrar por fecha de alta). Si eligió un tipo de proyecto, solo se incluyen tickets con proyecto resuelto de ese tipo (misma lógica que el gráfico). «Todos los tipos» = cola global sin exigir vínculo a proyecto. La entidad GLPI del backend, si está definida, acota todos los conteos."
-            />
-            {indicatorsKpisErr && (
-              <p style={{ color: "var(--danger-text)", fontSize: "0.86rem", marginTop: "0.65rem" }}>Error: {indicatorsKpisErr}</p>
-            )}
-            {indicatorsTimeTicketsLoading && (
-              <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.65rem" }}>Cargando totales…</p>
-            )}
-            {!indicatorsTimeTicketsLoading && !indicatorsKpisErr && indicatorsKpis && (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-                  gap: "1.25rem",
-                  marginTop: "1rem",
-                }}
-              >
-                {(
-                  [
-                    {
-                      label: "Total de tickets creados:",
-                      cardTitle: "Total de tickets creados",
-                      value: indicatorsKpis.tickets_created_in_range,
-                    },
-                    {
-                      label: "Total tickets resueltos:",
-                      cardTitle: "Total tickets resueltos",
-                      value: indicatorsKpis.tickets_resolved_in_range,
-                    },
-                    {
-                      label: "Total tickets abiertos:",
-                      cardTitle: "Tickets abiertos",
-                      value: indicatorsKpis.tickets_open_now,
-                    },
-                  ] as const
-                ).map((k) => (
-                  <div
-                    key={k.cardTitle}
-                    style={{
-                      display: "flex",
-                      alignItems: "stretch",
-                      gap: "0.85rem",
-                      minWidth: 0,
-                    }}
-                  >
-                    <span
-                      style={{
-                        flex: "0 0 auto",
-                        alignSelf: "center",
-                        fontSize: "0.88rem",
-                        color: "var(--text)",
-                        maxWidth: "42%",
-                      }}
-                    >
-                      {k.label}
-                    </span>
-                    <div
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        background: "var(--surface2)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                        padding: "0.65rem 0.85rem",
-                        position: "relative",
-                      }}
-                    >
-                      <div
-                        title={k.cardTitle}
-                        style={{
-                          fontSize: "0.72rem",
-                          color: "var(--muted)",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          paddingRight: "1.25rem",
-                        }}
-                      >
-                        {k.cardTitle}
-                      </div>
-                      <div style={{ fontSize: "1.75rem", fontWeight: 800, lineHeight: 1.15, marginTop: "0.15rem" }}>
-                        {k.value}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "1.2rem",
-            }}
-          >
-            <SectionTitle
-              title="Tiempo y total de tickets por proyecto"
-              subtitle="Proyecto según plugin Fields (ticket o solicitante). Horas: tiempo registrado en tareas con begin/date en el rango (puede incluir tickets creados antes). Barra azul: total de tickets dados de alta en el rango, tengan o no tareas en ese periodo."
-            />
-            {indicatorsTimeTicketsErr && (
-              <p style={{ color: "var(--danger-text)", fontSize: "0.86rem", marginTop: "0.5rem" }}>Error: {indicatorsTimeTicketsErr}</p>
-            )}
-            {!indicatorsTimeTicketsLoading && indicatorsTimeTickets && !indicatorsTimeTickets.rows.length && (
-              <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.75rem" }}>
-                No hay datos: no hay proyectos con tiempo de tareas en el rango ni tickets creados en el rango (según
-                los filtros actuales).
-              </p>
-            )}
-            {indicatorsTimeTickets && indicatorsTimeTickets.rows.length > 0 && (
-              <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: "0.5rem" }}>
-                Pulse la barra verde (horas) para ver tickets, asignados y tiempo invertido en tareas. Pulse la barra
-                azul (tickets creados en el rango) para un gráfico de altas por semana o por mes usando el mismo
-                rango de fechas de arriba.
-              </p>
-            )}
-            {indicatorsTimeTickets && indicatorsTimeTickets.rows.length > 0 && (
-              <div style={{ marginTop: "1rem", width: "100%", minHeight: 380 }}>
-                <ResponsiveContainer width="100%" height={400}>
-                  <BarChart
-                    data={indicatorsTimeTickets.rows.map((r) => ({
-                      ...r,
-                      label: r.project_name,
-                    }))}
-                    margin={{ top: 12, right: 16, left: 4, bottom: 72 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                      tickLine={{ stroke: CHART_AXIS }}
-                      axisLine={{ stroke: CHART_AXIS }}
-                      angle={-32}
-                      textAnchor="end"
-                      height={68}
-                      interval={0}
-                    />
-                    <YAxis
-                      tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                      tickLine={{ stroke: CHART_AXIS }}
-                      axisLine={{ stroke: CHART_AXIS }}
-                      allowDecimals
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: CHART_TOOLTIP_BG,
-                        border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-                        borderRadius: 8,
-                        color: CHART_TEXT,
-                      }}
-                      labelStyle={{ color: CHART_TEXT }}
-                      formatter={(value: number, name: string) => {
-                        if (name === "Horas (tareas en rango)") return [`${value} h`, name];
-                        if (name === "Tickets creados en rango") return [value, name];
-                        return [value, name];
-                      }}
-                    />
-                    <Legend wrapperStyle={{ color: CHART_TEXT, fontSize: "0.82rem" }} />
-                    <Bar dataKey="horas" name="Horas (tareas en rango)" fill="#70ad47" radius={[5, 5, 0, 0]} maxBarSize={28}>
-                      {indicatorsTimeTickets.rows.map((entry, index) => (
-                        <Cell
-                          key={`horas-${entry.project_id}-${index}`}
-                          cursor="pointer"
-                          fill="#70ad47"
-                          onClick={() => void openIndicatorsHorasDetail(entry)}
-                        />
-                      ))}
-                    </Bar>
-                    <Bar dataKey="total_tickets" name="Tickets creados en rango" fill="#5b9bd5" radius={[5, 5, 0, 0]} maxBarSize={28}>
-                      {indicatorsTimeTickets.rows.map((entry, index) => (
-                        <Cell
-                          key={`tickets-${entry.project_id}-${index}`}
-                          cursor="pointer"
-                          fill="#5b9bd5"
-                          onClick={() => openIndicatorsVolumeModal(entry)}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-          </section>
-
-          <section
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "1.2rem",
-            }}
-          >
-            <SectionTitle
-              title="Tickets por fuente de solicitud (categoría)"
-              subtitle="Total de tickets dados de alta en el rango (fecha de apertura en GLPI), agrupados por el campo «Fuente de solicitud». Solo tickets vinculados a un proyecto, con el mismo criterio que el gráfico principal (plugin Fields o, si no aplica, itils_projects). Respeta tipo de proyecto y fechas de los filtros."
-            />
-            <p style={{ margin: "0.35rem 0 0", color: "var(--muted)", fontSize: "0.78rem" }}>
-              Pulse una barra para ver cuántos tickets de esa categoría corresponden a cada proyecto.
-            </p>
-            {indicatorsTicketsByRequestTypeErr && (
-              <p style={{ color: "var(--danger-text)", fontSize: "0.86rem", marginTop: "0.65rem" }}>
-                Error: {indicatorsTicketsByRequestTypeErr}
-              </p>
-            )}
-            {indicatorsTimeTicketsLoading && (
-              <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.65rem" }}>Cargando…</p>
-            )}
-            {!indicatorsTimeTicketsLoading &&
-              !indicatorsTicketsByRequestTypeErr &&
-              indicatorsTicketsByRequestType &&
-              !indicatorsTicketsByRequestType.rows.length && (
-                <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.75rem" }}>
-                  No hay tickets en el rango con proyecto asignado (según los filtros actuales).
-                </p>
-              )}
-            {!indicatorsTimeTicketsLoading &&
-              !indicatorsTicketsByRequestTypeErr &&
-              indicatorsRequestTypeChartData.length > 0 && (
-                <div style={{ width: "100%", marginTop: "0.75rem" }}>
-                  <ResponsiveContainer
-                    width="100%"
-                    height={Math.min(720, Math.max(280, indicatorsRequestTypeChartData.length * 32))}
-                  >
-                    <BarChart
-                      layout="vertical"
-                      data={indicatorsRequestTypeChartData}
-                      margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} horizontal={false} />
-                      <XAxis
-                        type="number"
-                        allowDecimals={false}
-                        stroke={CHART_AXIS}
-                        tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                      />
-                      <YAxis
-                        type="category"
-                        dataKey="label"
-                        width={148}
-                        stroke={CHART_AXIS}
-                        tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          background: CHART_TOOLTIP_BG,
-                          border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-                          borderRadius: 8,
-                          fontSize: "0.82rem",
-                        }}
-                        formatter={(value: number) => [value, "Tickets"]}
-                        labelFormatter={(label, items) => {
-                          const row = items?.[0]?.payload as { request_type_name?: string } | undefined;
-                          return row?.request_type_name ?? String(label);
-                        }}
-                      />
-                      <Bar dataKey="ticket_count" name="Tickets" radius={[0, 4, 4, 0]}>
-                        {indicatorsRequestTypeChartData.map((entry, i) => (
-                          <Cell
-                            key={`rt-${entry.requesttypes_id}-${i}`}
-                            fill={COLORS[i % COLORS.length]}
-                            cursor="pointer"
-                            onClick={() => openIndicatorsRtBreakdownModal(entry)}
-                          />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-          </section>
-
-          <section
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "1.2rem",
-            }}
-          >
-            <SectionTitle
-              title="Evolución semanal: esfuerzo medio por ticket resuelto"
-              subtitle="Por cada semana ISO del rango: se suma el tiempo registrado en tareas con fecha en esa semana y se cuenta cuántos tickets pasaron a resuelto/cerrado con fecha de solución en esa semana. El indicador es el cociente (horas totales ÷ resueltos); mide carga de trabajo media por cierre, no el lapso calendario desde la apertura. Mismo alcance de proyecto que el gráfico principal. En el eje vertical, los valores son horas decimales (p. ej. 1,813 h ≈ 1 h 49 min, no «1 h y 81 min»)."
-            />
-            {indicatorsWeeklyResolutionErr && (
-              <p style={{ color: "var(--danger-text)", fontSize: "0.86rem", marginTop: "0.65rem" }}>
-                Error: {indicatorsWeeklyResolutionErr}
-              </p>
-            )}
-            {indicatorsTimeTicketsLoading && (
-              <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.65rem" }}>Cargando…</p>
-            )}
-            {!indicatorsTimeTicketsLoading &&
-              !indicatorsWeeklyResolutionErr &&
-              indicatorsWeeklyResolution &&
-              !indicatorsWeeklyResolution.rows.length && (
-                <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.75rem" }}>
-                  No hay semanas con tiempo de tareas ni tickets resueltos en el rango (según filtros).
-                </p>
-              )}
-            {!indicatorsTimeTicketsLoading &&
-              !indicatorsWeeklyResolutionErr &&
-              indicatorsWeeklyResolutionChartData.length > 0 && (
-                <div style={{ width: "100%", marginTop: "1rem" }}>
-                  <ResponsiveContainer width="100%" height={340}>
-                    <LineChart
-                      data={indicatorsWeeklyResolutionChartData}
-                      margin={{ top: 12, right: 16, left: 4, bottom: 64 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
-                      <XAxis
-                        dataKey="chartLabel"
-                        tick={{ fill: CHART_TEXT, fontSize: 10 }}
-                        tickLine={{ stroke: CHART_AXIS }}
-                        axisLine={{ stroke: CHART_AXIS }}
-                        angle={-30}
-                        textAnchor="end"
-                        height={58}
-                        interval={0}
-                      />
-                      <YAxis
-                        tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                        tickLine={{ stroke: CHART_AXIS }}
-                        axisLine={{ stroke: CHART_AXIS }}
-                        tickFormatter={(v) => `${v} h`}
-                        width={48}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          background: CHART_TOOLTIP_BG,
-                          border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-                          borderRadius: 8,
-                          fontSize: "0.82rem",
-                          color: CHART_TEXT,
-                        }}
-                        content={({ active, payload }) => {
-                          if (!active || !payload?.[0]) return null;
-                          const pl = payload[0].payload as (typeof indicatorsWeeklyResolutionChartData)[number];
-                          return (
-                            <div style={{ padding: "0.35rem 0.5rem" }}>
-                              <div style={{ fontWeight: 650, marginBottom: 6 }}>{pl.period_label}</div>
-                              <div>
-                                Promedio:{" "}
-                                {pl.avg_hours_per_resolved != null ? (
-                                  <>
-                                    <strong>{fmtDecimalHoursAsHm(pl.avg_hours_per_resolved)}</strong> por ticket
-                                    resuelto
-                                    <span
-                                      style={{
-                                        color: "var(--muted)",
-                                        fontWeight: 400,
-                                        display: "block",
-                                        marginTop: 4,
-                                        fontSize: "0.78rem",
-                                      }}
-                                    >
-                                      En el gráfico, «h» son horas decimales ({pl.avg_hours_per_resolved} h = fracción
-                                      de hora, no minutos tras la coma).
-                                    </span>
-                                  </>
-                                ) : (
-                                  "— (sin resueltos en la semana)"
-                                )}
-                              </div>
-                              <div style={{ color: "var(--muted)", marginTop: 4, fontSize: "0.78rem" }}>
-                                Resueltos en la semana: {pl.tickets_resolved} · Tiempo total en tareas:{" "}
-                                {fmtActiontime(pl.actiontime_seconds)}
-                              </div>
-                            </div>
-                          );
-                        }}
-                      />
-                      <Legend wrapperStyle={{ color: CHART_TEXT, fontSize: "0.82rem" }} />
-                      <Line
-                        type="monotone"
-                        dataKey="avgHours"
-                        name="Horas medias por ticket resuelto"
-                        stroke="#714b67"
-                        strokeWidth={2}
-                        dot={{ r: 4, fill: "#714b67" }}
-                        activeDot={{ r: 6 }}
-                        connectNulls={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-          </section>
-        </div>
-      )}
 
       {page === "coordIndicators" && (
         <CoordIndicatorsPage
@@ -3349,6 +2771,10 @@ export default function App() {
 
       {page === "billingIndicators" && <BillingIndicatorsPage />}
 
+      {page === "costCenters" && <CostCentersPage />}
+
+      {page === "systemSettings" && user.role === "admin" && <SystemSettingsPage />}
+
       {page === "supportHours" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
           <section
@@ -3361,7 +2787,7 @@ export default function App() {
           >
             <SectionTitle
               title="Filtros"
-              subtitle="Fechas y tipo de proyecto. El tiempo se atribuye al mes del registro de la tarea (inicio o fecha de la tarea) si cae en el rango. La categoría es la fuente de solicitud del ticket (glpi_requesttypes), igual que en Indicadores."
+              subtitle="Fechas y tipo de proyecto. El tiempo se atribuye al mes del registro de la tarea (inicio o fecha de la tarea) si cae en el rango. La categoría es la fuente de solicitud del ticket (glpi_requesttypes)."
             />
             <div
               style={{
@@ -3544,666 +2970,6 @@ export default function App() {
           </section>
         </div>
       )}
-            {indicatorsVolumeOpen && (
-              <div
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(33, 37, 41, 0.45)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  zIndex: 61,
-                }}
-                onClick={() => {
-                  setIndicatorsVolumeOpen(false);
-                  setIndicatorsVolumeContext(null);
-                  setIndicatorsVolumeData(null);
-                  setIndicatorsVolumeErr(null);
-                }}
-              >
-                <div
-                  style={{
-                    background: "var(--surface)",
-                    borderRadius: "16px",
-                    border: "1px solid var(--border)",
-                    padding: "1.25rem 1.5rem",
-                    maxWidth: "920px",
-                    width: "100%",
-                    maxHeight: "88vh",
-                    overflowY: "auto",
-                    boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
-                    <div>
-                      <h2 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 650 }}>
-                        Tickets creados — {indicatorsVolumeData?.project_name ?? indicatorsVolumeContext?.project_name ?? "…"}
-                      </h2>
-                      <p style={{ margin: "0.35rem 0 0", color: "var(--muted)", fontSize: "0.85rem" }}>
-                        Conteo por fecha de alta en GLPI (creación del ticket), mismo vínculo proyecto–ticket que el
-                        gráfico principal.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIndicatorsVolumeOpen(false);
-                        setIndicatorsVolumeContext(null);
-                        setIndicatorsVolumeData(null);
-                        setIndicatorsVolumeErr(null);
-                      }}
-                      style={{
-                        background: "transparent",
-                        border: "1px solid var(--border)",
-                        borderRadius: 999,
-                        padding: "0.25rem 0.7rem",
-                        color: "var(--muted)",
-                        fontSize: "0.8rem",
-                        cursor: "pointer",
-                      }}
-                    >
-                      Cerrar
-                    </button>
-                  </div>
-
-                  <p style={{ margin: "1rem 0 0", color: "var(--muted)", fontSize: "0.85rem" }}>
-                    Periodo (mismas fechas que en la página):{" "}
-                    <strong style={{ color: "var(--text)" }}>
-                      {indicatorsDateFrom && indicatorsDateTo
-                        ? `${new Date(`${indicatorsDateFrom}T12:00:00`).toLocaleDateString("es-ES", {
-                            day: "numeric",
-                            month: "long",
-                            year: "numeric",
-                          })} — ${new Date(`${indicatorsDateTo}T12:00:00`).toLocaleDateString("es-ES", {
-                            day: "numeric",
-                            month: "long",
-                            year: "numeric",
-                          })}`
-                        : "—"}
-                    </strong>
-                  </p>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                      gap: "0.75rem",
-                      marginTop: "0.85rem",
-                      alignItems: "end",
-                    }}
-                  >
-                    <div>
-                      <label style={{ display: "block", fontSize: "0.78rem", color: "var(--muted)", marginBottom: 4 }}>
-                        Agrupar
-                      </label>
-                      <select
-                        value={indicatorsVolumeGranularity}
-                        onChange={(e) => setIndicatorsVolumeGranularity(e.target.value === "month" ? "month" : "week")}
-                        style={{
-                          width: "100%",
-                          padding: "0.45rem",
-                          borderRadius: 8,
-                          border: "1px solid var(--border)",
-                          background: "var(--surface2)",
-                          color: "var(--text)",
-                        }}
-                      >
-                        <option value="week">Por semana (ISO)</option>
-                        <option value="month">Por mes</option>
-                      </select>
-                    </div>
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => void refreshIndicatorsVolume()}
-                        disabled={
-                          indicatorsVolumeLoading ||
-                          !indicatorsVolumeContext ||
-                          !indicatorsDateFrom ||
-                          !indicatorsDateTo
-                        }
-                        style={{
-                          width: "100%",
-                          background: "var(--accent)",
-                          color: "var(--on-accent)",
-                          border: "none",
-                          borderRadius: 8,
-                          padding: "0.5rem 0.75rem",
-                          fontWeight: 700,
-                          cursor: indicatorsVolumeLoading ? "wait" : "pointer",
-                        }}
-                      >
-                        {indicatorsVolumeLoading ? "Cargando…" : "Actualizar gráfico"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {indicatorsVolumeErr && (
-                    <p style={{ color: "var(--danger-text)", fontSize: "0.86rem", marginTop: "0.75rem" }}>
-                      Error: {indicatorsVolumeErr}
-                    </p>
-                  )}
-
-                  {indicatorsVolumeLoading && (
-                    <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "0.85rem" }}>Cargando datos…</p>
-                  )}
-
-                  {indicatorsVolumeData && !indicatorsVolumeLoading && indicatorsVolumeData.rows.length === 0 && (
-                    <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginTop: "1rem" }}>
-                      No hay tickets creados en ese rango para este proyecto.
-                    </p>
-                  )}
-
-                  {indicatorsVolumeData && indicatorsVolumeData.rows.length > 0 && (
-                    <div style={{ marginTop: "1.1rem", width: "100%", minHeight: 300 }}>
-                      <ResponsiveContainer width="100%" height={340}>
-                        <BarChart
-                          data={indicatorsVolumeData.rows.map((r) => ({
-                            ...r,
-                            label: r.period_label,
-                          }))}
-                          margin={{ top: 8, right: 12, left: 4, bottom: 56 }}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
-                          <XAxis
-                            dataKey="label"
-                            tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                            tickLine={{ stroke: CHART_AXIS }}
-                            axisLine={{ stroke: CHART_AXIS }}
-                            angle={-28}
-                            textAnchor="end"
-                            height={52}
-                            interval={0}
-                          />
-                          <YAxis
-                            tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                            tickLine={{ stroke: CHART_AXIS }}
-                            axisLine={{ stroke: CHART_AXIS }}
-                            allowDecimals={false}
-                          />
-                          <Tooltip
-                            contentStyle={{
-                              background: CHART_TOOLTIP_BG,
-                              border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-                              borderRadius: 8,
-                              color: CHART_TEXT,
-                            }}
-                            formatter={(v: number) => [v, "Tickets creados"]}
-                          />
-                          <Bar dataKey="ticket_count" name="Tickets creados" fill="#5b9bd5" radius={[6, 6, 0, 0]} maxBarSize={48} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {indicatorsDetailOpen && (
-              <div
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(33, 37, 41, 0.45)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  zIndex: 60,
-                }}
-                onClick={() => {
-                  setIndicatorsDetailOpen(false);
-                  setIndicatorsDetailContext(null);
-                  setIndicatorsDetail(null);
-                  setIndicatorsDetailErr(null);
-                }}
-              >
-                <div
-                  style={{
-                    background: "var(--surface)",
-                    borderRadius: "16px",
-                    border: "1px solid var(--border)",
-                    padding: "1.25rem 1.5rem",
-                    maxWidth: "960px",
-                    width: "100%",
-                    maxHeight: "82vh",
-                    overflowY: "auto",
-                    boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
-                    <div>
-                      <h2 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 650 }}>
-                        Tiempo por ticket —{" "}
-                        {indicatorsDetail?.project_name ?? indicatorsDetailContext?.project_name ?? "…"}
-                      </h2>
-                      <p style={{ margin: "0.35rem 0 0", color: "var(--muted)", fontSize: "0.85rem" }}>
-                        Rango: {indicatorsDetail?.date_from ?? indicatorsDateFrom} →{" "}
-                        {indicatorsDetail?.date_to ?? indicatorsDateTo}
-                        {indicatorsDetail && (
-                          <>
-                            {" "}
-                            · {indicatorsDetail.rows.length} ticket(s)
-                          </>
-                        )}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIndicatorsDetailOpen(false);
-                        setIndicatorsDetailContext(null);
-                        setIndicatorsDetail(null);
-                        setIndicatorsDetailErr(null);
-                      }}
-                      style={{
-                        background: "transparent",
-                        border: "1px solid var(--border)",
-                        borderRadius: 999,
-                        padding: "0.25rem 0.7rem",
-                        color: "var(--muted)",
-                        fontSize: "0.8rem",
-                        cursor: "pointer",
-                      }}
-                    >
-                      Cerrar
-                    </button>
-                  </div>
-
-                  {indicatorsDetailLoading && (
-                    <p style={{ marginTop: "1rem", color: "var(--muted)" }}>Cargando tickets…</p>
-                  )}
-                  {indicatorsDetailErr && (
-                    <p style={{ color: "var(--danger-text)", marginTop: "0.85rem" }}>Error: {indicatorsDetailErr}</p>
-                  )}
-                  {indicatorsDetail && !indicatorsDetailLoading && (
-                    <div style={{ marginTop: "0.9rem", overflowX: "auto", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                      {indicatorsDetail.rows.length === 0 ? (
-                        <p style={{ margin: "0.85rem", color: "var(--muted)", fontSize: "0.86rem" }}>
-                          No hay tareas con tiempo registrado en este rango para este proyecto.
-                        </p>
-                      ) : (
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.86rem" }}>
-                          <thead>
-                            <tr style={{ background: "var(--surface2)", textAlign: "left" }}>
-                              <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>Ticket</th>
-                              <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>Título</th>
-                              <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>
-                                Asignados
-                              </th>
-                              <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>Tiempo en rango</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {indicatorsDetail.rows.map((r, i) => (
-                              <tr
-                                key={`${r.ticket_id}-${i}`}
-                                style={{
-                                  borderTop: "1px solid var(--border)",
-                                  background: i % 2 ? "rgba(255,255,255,0.02)" : "transparent",
-                                }}
-                              >
-                                <td style={{ padding: "0.55rem 0.85rem", fontWeight: 650 }}>{r.ticket_id}</td>
-                                <td style={{ padding: "0.55rem 0.85rem" }}>{r.titulo?.trim() ? r.titulo : "—"}</td>
-                                <td style={{ padding: "0.55rem 0.85rem", fontSize: "0.82rem" }}>
-                                  {r.assignees?.trim() ? r.assignees : "—"}
-                                </td>
-                                <td style={{ padding: "0.55rem 0.85rem", fontWeight: 650 }}>{fmtActiontime(r.actiontime_seconds)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          {indicatorsRtBreakdownOpen && (
-            <div
-              style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(33, 37, 41, 0.45)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                zIndex: 62,
-              }}
-              onClick={() => {
-                setIndicatorsRtBreakdownOpen(false);
-                setIndicatorsRtBreakdownContext(null);
-                setIndicatorsRtBreakdownData(null);
-                setIndicatorsRtBreakdownErr(null);
-                setIndicatorsRtTicketListOpen(false);
-                setIndicatorsRtTicketListData(null);
-                setIndicatorsRtTicketListErr(null);
-              }}
-            >
-              <div
-                style={{
-                  background: "var(--surface)",
-                  borderRadius: "16px",
-                  border: "1px solid var(--border)",
-                  padding: "1.25rem 1.5rem",
-                  maxWidth: "920px",
-                  width: "100%",
-                  maxHeight: "88vh",
-                  overflowY: "auto",
-                  boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 650 }}>
-                      Por proyecto —{" "}
-                      {indicatorsRtBreakdownData?.request_type_name ??
-                        indicatorsRtBreakdownContext?.request_type_name ??
-                        "…"}
-                    </h2>
-                    <p style={{ margin: "0.35rem 0 0", color: "var(--muted)", fontSize: "0.85rem" }}>
-                      Fuente de solicitud y tipo de proyecto: mismos filtros que arriba.{" "}
-                      <strong>Horas (verde):</strong> tiempo registrado en tareas cuyo inicio o fecha cae entre{" "}
-                      {indicatorsDateFrom} y {indicatorsDateTo}, solo tickets de esta categoría (puede incluir tickets
-                      dados de alta fuera del rango).{" "}
-                      <strong>Tickets (azul):</strong> altas en GLPI en el rango (fecha de creación del ticket).
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIndicatorsRtBreakdownOpen(false);
-                      setIndicatorsRtBreakdownContext(null);
-                      setIndicatorsRtBreakdownData(null);
-                      setIndicatorsRtBreakdownErr(null);
-                      setIndicatorsRtTicketListOpen(false);
-                      setIndicatorsRtTicketListData(null);
-                      setIndicatorsRtTicketListErr(null);
-                    }}
-                    style={{
-                      background: "transparent",
-                      border: "1px solid var(--border)",
-                      borderRadius: 999,
-                      padding: "0.25rem 0.7rem",
-                      color: "var(--muted)",
-                      fontSize: "0.8rem",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Cerrar
-                  </button>
-                </div>
-
-                {!indicatorsRtBreakdownLoading &&
-                  !indicatorsRtBreakdownErr &&
-                  indicatorsRtBreakdownData &&
-                  indicatorsRtBreakdownData.rows.length > 0 && (
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                        gap: "0.85rem",
-                        marginTop: "1rem",
-                      }}
-                    >
-                      <div
-                        style={{
-                          background: "var(--surface2)",
-                          border: "1px solid var(--border)",
-                          borderLeft: "4px solid #5b9bd5",
-                          borderRadius: 10,
-                          padding: "0.75rem 1rem",
-                        }}
-                      >
-                        <div style={{ fontSize: "0.78rem", color: "var(--muted)", fontWeight: 600 }}>
-                          Total tickets (creados en rango)
-                        </div>
-                        <div style={{ fontSize: "1.55rem", fontWeight: 800, marginTop: "0.2rem", lineHeight: 1.15 }}>
-                          {indicatorsRtBreakdownTotals.totalTickets}
-                        </div>
-                        <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "0.35rem" }}>
-                          Suma de todos los proyectos · misma categoría y filtros
-                        </div>
-                      </div>
-                      <div
-                        style={{
-                          background: "var(--surface2)",
-                          border: "1px solid var(--border)",
-                          borderLeft: "4px solid #70ad47",
-                          borderRadius: 10,
-                          padding: "0.75rem 1rem",
-                        }}
-                      >
-                        <div style={{ fontSize: "0.78rem", color: "var(--muted)", fontWeight: 600 }}>
-                          Total horas (tareas en rango)
-                        </div>
-                        <div style={{ fontSize: "1.55rem", fontWeight: 800, marginTop: "0.2rem", lineHeight: 1.15 }}>
-                          {indicatorsRtBreakdownTotals.totalSeconds <= 0
-                            ? "0 h"
-                            : fmtActiontime(indicatorsRtBreakdownTotals.totalSeconds)}
-                        </div>
-                        <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "0.35rem" }}>
-                          Tiempo registrado en el periodo, agregado entre proyectos
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                {indicatorsRtBreakdownLoading && (
-                  <p style={{ marginTop: "1rem", color: "var(--muted)" }}>Cargando desglose…</p>
-                )}
-                {indicatorsRtBreakdownErr && (
-                  <p style={{ color: "var(--danger-text)", marginTop: "0.85rem" }}>Error: {indicatorsRtBreakdownErr}</p>
-                )}
-                {!indicatorsRtBreakdownLoading &&
-                  !indicatorsRtBreakdownErr &&
-                  indicatorsRtBreakdownData &&
-                  !indicatorsRtBreakdownData.rows.length && (
-                    <p style={{ color: "var(--muted)", marginTop: "0.85rem" }}>
-                      No hay datos: ningún ticket de esta categoría con proyecto en el rango (ni altas ni tareas con tiempo
-                      registrado en las fechas indicadas).
-                    </p>
-                  )}
-                {!indicatorsRtBreakdownLoading &&
-                  !indicatorsRtBreakdownErr &&
-                  indicatorsRtBreakdownChartData.length > 0 && (
-                    <div style={{ width: "100%", marginTop: "1rem" }}>
-                      <p style={{ margin: "0 0 0.5rem", color: "var(--muted)", fontSize: "0.78rem" }}>
-                        Misma lógica temporal que el gráfico principal: horas según tareas en el periodo; tickets según
-                        fecha de creación del ticket. Pulse la barra <strong>azul</strong> (tickets) si hay conteo &gt; 0
-                        para ver el listado de esos tickets.
-                      </p>
-                      <ResponsiveContainer
-                        width="100%"
-                        height={Math.min(720, Math.max(280, indicatorsRtBreakdownChartData.length * 36))}
-                      >
-                        <BarChart
-                          layout="vertical"
-                          data={indicatorsRtBreakdownChartData}
-                          margin={{ top: 8, right: 28, left: 8, bottom: 8 }}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} horizontal={false} />
-                          <XAxis
-                            type="number"
-                            allowDecimals
-                            stroke={CHART_AXIS}
-                            tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                          />
-                          <YAxis
-                            type="category"
-                            dataKey="label"
-                            width={132}
-                            stroke={CHART_AXIS}
-                            tick={{ fill: CHART_TEXT, fontSize: 11 }}
-                          />
-                          <Tooltip
-                            contentStyle={{
-                              background: CHART_TOOLTIP_BG,
-                              border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-                              borderRadius: 8,
-                              fontSize: "0.82rem",
-                              color: CHART_TEXT,
-                            }}
-                            labelStyle={{ color: CHART_TEXT }}
-                            formatter={(value: number, name: string) => {
-                              if (name === "Horas (tareas en rango)") return [`${value} h`, name];
-                              if (name === "Tickets creados en rango") return [value, name];
-                              return [value, name];
-                            }}
-                            labelFormatter={(label, items) => {
-                              const row = items?.[0]?.payload as { project_name?: string } | undefined;
-                              return row?.project_name ?? String(label);
-                            }}
-                          />
-                          <Legend wrapperStyle={{ color: CHART_TEXT, fontSize: "0.82rem" }} />
-                          <Bar
-                            dataKey="horas"
-                            name="Horas (tareas en rango)"
-                            fill="#70ad47"
-                            radius={[0, 4, 4, 0]}
-                            maxBarSize={22}
-                          />
-                          <Bar
-                            dataKey="ticket_count"
-                            name="Tickets creados en rango"
-                            fill="#5b9bd5"
-                            radius={[0, 4, 4, 0]}
-                            maxBarSize={22}
-                          >
-                            {indicatorsRtBreakdownChartData.map((row, i) => (
-                              <Cell
-                                key={`rt-tickets-${row.project_id}-${i}`}
-                                fill="#5b9bd5"
-                                cursor={row.ticket_count > 0 ? "pointer" : "default"}
-                                onClick={() => openIndicatorsRtTicketListFromBreakdownBar(row)}
-                              />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
-              </div>
-            </div>
-          )}
-
-          {indicatorsRtTicketListOpen && (
-            <div
-              style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(33, 37, 41, 0.5)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                zIndex: 63,
-              }}
-              onClick={() => {
-                setIndicatorsRtTicketListOpen(false);
-                setIndicatorsRtTicketListData(null);
-                setIndicatorsRtTicketListErr(null);
-              }}
-            >
-              <div
-                style={{
-                  background: "var(--surface)",
-                  borderRadius: "16px",
-                  border: "1px solid var(--border)",
-                  padding: "1.25rem 1.5rem",
-                  maxWidth: "960px",
-                  width: "100%",
-                  maxHeight: "85vh",
-                  overflowY: "auto",
-                  boxShadow: "0 24px 80px rgba(0,0,0,0.65)",
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 650 }}>
-                      Tickets del conteo — {indicatorsRtTicketListData?.project_name ?? "…"}
-                    </h2>
-                    <p style={{ margin: "0.35rem 0 0", color: "var(--muted)", fontSize: "0.85rem" }}>
-                      Fuente: {indicatorsRtTicketListData?.request_type_name ?? "…"} · Alta del ticket en{" "}
-                      {indicatorsRtTicketListData?.date_from ?? indicatorsDateFrom} →{" "}
-                      {indicatorsRtTicketListData?.date_to ?? indicatorsDateTo}. La columna de tiempo suma las tareas
-                      registradas en ese mismo rango de fechas.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIndicatorsRtTicketListOpen(false);
-                      setIndicatorsRtTicketListData(null);
-                      setIndicatorsRtTicketListErr(null);
-                    }}
-                    style={{
-                      background: "transparent",
-                      border: "1px solid var(--border)",
-                      borderRadius: 999,
-                      padding: "0.25rem 0.7rem",
-                      color: "var(--muted)",
-                      fontSize: "0.8rem",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Cerrar
-                  </button>
-                </div>
-
-                {indicatorsRtTicketListLoading && (
-                  <p style={{ marginTop: "1rem", color: "var(--muted)" }}>Cargando tickets…</p>
-                )}
-                {indicatorsRtTicketListErr && (
-                  <p style={{ color: "var(--danger-text)", marginTop: "0.85rem" }}>Error: {indicatorsRtTicketListErr}</p>
-                )}
-                {indicatorsRtTicketListData && !indicatorsRtTicketListLoading && (
-                  <div style={{ marginTop: "0.9rem", overflowX: "auto", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                    {indicatorsRtTicketListData.rows.length === 0 ? (
-                      <p style={{ margin: "0.85rem", color: "var(--muted)", fontSize: "0.86rem" }}>
-                        No hay tickets que coincidan con este conteo.
-                      </p>
-                    ) : (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.86rem" }}>
-                        <thead>
-                          <tr style={{ background: "var(--surface2)", textAlign: "left" }}>
-                            <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>N.º ticket</th>
-                            <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>Título</th>
-                            <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>Asignados</th>
-                            <th style={{ padding: "0.65rem 0.85rem", color: "var(--muted)", fontWeight: 650 }}>
-                              Tiempo en rango
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {indicatorsRtTicketListData.rows.map((r, i) => (
-                            <tr
-                              key={`${r.ticket_id}-${i}`}
-                              style={{
-                                borderTop: "1px solid var(--border)",
-                                background: i % 2 ? "rgba(255,255,255,0.02)" : "transparent",
-                              }}
-                            >
-                              <td style={{ padding: "0.55rem 0.85rem", fontWeight: 650 }}>{r.ticket_id}</td>
-                              <td style={{ padding: "0.55rem 0.85rem" }}>{r.titulo?.trim() ? r.titulo : "—"}</td>
-                              <td style={{ padding: "0.55rem 0.85rem", fontSize: "0.82rem" }}>
-                                {r.assignees?.trim() ? r.assignees : "—"}
-                              </td>
-                              <td style={{ padding: "0.55rem 0.85rem", fontWeight: 650 }}>
-                                {fmtActiontime(r.actiontime_seconds)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </main>
       </div>
     </div>

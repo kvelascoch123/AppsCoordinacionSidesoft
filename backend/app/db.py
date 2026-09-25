@@ -4,10 +4,10 @@ from typing import Any, Dict, Iterator, Optional, Tuple, Union
 import pymysql
 from pymysql.cursors import DictCursor
 
-from app.config import get_settings
+from app.modules.soporte.config import get_settings
 
 
-def _connect():
+def _connect(read_timeout: int = 60):
     s = get_settings()
     return pymysql.connect(
         host=s.db_host,
@@ -18,14 +18,14 @@ def _connect():
         charset=s.db_charset,
         cursorclass=DictCursor,
         connect_timeout=10,
-        read_timeout=60,
+        read_timeout=read_timeout,
         write_timeout=60,
     )
 
 
 @contextmanager
-def get_connection() -> Iterator[pymysql.connections.Connection]:
-    conn = _connect()
+def get_connection(read_timeout: int = 60) -> Iterator[pymysql.connections.Connection]:
+    conn = _connect(read_timeout=read_timeout)
     try:
         yield conn
     finally:
@@ -33,9 +33,12 @@ def get_connection() -> Iterator[pymysql.connections.Connection]:
 
 
 def fetch_all(
-    sql: str, params: Optional[Union[Tuple[Any, ...], dict]] = None
+    sql: str,
+    params: Optional[Union[Tuple[Any, ...], dict]] = None,
+    *,
+    read_timeout: int = 60,
 ) -> list[Dict[str, Any]]:
-    with get_connection() as conn:
+    with get_connection(read_timeout=read_timeout) as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params or ())
             return list(cur.fetchall())
@@ -46,6 +49,22 @@ def fetch_one(
 ) -> Optional[Dict[str, Any]]:
     rows = fetch_all(sql, params)
     return rows[0] if rows else None
+
+
+def execute(
+    sql: str, params: Optional[Union[Tuple[Any, ...], dict]] = None
+) -> Tuple[int, int]:
+    """Ejecuta una sentencia de escritura con commit. Devuelve (filas afectadas, lastrowid)."""
+    with get_connection() as conn:
+        try:
+            with conn.cursor() as cur:
+                affected = cur.execute(sql, params or ())
+                last_id = int(cur.lastrowid or 0)
+            conn.commit()
+            return int(affected), last_id
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def bulk_update_ticket_request_types(updates: list[tuple[int, int]]) -> int:

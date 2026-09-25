@@ -1,20 +1,43 @@
+import logging
+from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Path, Query
+from fastapi import FastAPI, HTTPException, Path, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.config import get_settings
-from app.coordination_routes import router as coordination_router
-from app.billing_routes import router as billing_router
+from app.modules.soporte.config import get_settings
+from app.modules.soporte.routes import router as coordination_router
+from app.modules.soporte.billing_routes import router as billing_router
+from app.modules.soporte.cost_centers_routes import router as cost_centers_router
+from app.modules.sistema import auth
+from app.modules.sistema.routes import auth_router, router as system_router, survey_router
+from app.modules.sistema.schema import ensure_schema
 from app.db import fetch_one
-from app import indicators, llm, metrics, reports
+from app import llm
+from app.modules.soporte import indicators, metrics, reports
 from app.db import fetch_all
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("app")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    try:
+        await run_in_threadpool(ensure_schema)
+    except Exception:  # noqa: BLE001 — la API sigue sirviendo los indicadores aunque falle la migración
+        log.exception("No se pudieron crear/verificar las tablas glpi_plugin_coorddash_*")
+    yield
+
 
 app = FastAPI(
     title="GLPI Coordination Dashboard API",
     description="Indicadores operativos de tickets GLPI; escritura limitada a tipo de solicitud en informes.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 _settings = get_settings()
@@ -26,8 +49,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def auth_guard(request: Request, call_next):
+    """Toda la API /api/* exige sesión (salvo salud y login) y cabecera anti-CSRF en métodos de escritura."""
+    path = request.url.path
+    if not path.startswith("/api/") or not _settings.auth_enabled or request.method == "OPTIONS":
+        return await call_next(request)
+    if request.method not in _SAFE_METHODS and request.headers.get(auth.CSRF_HEADER) != "XMLHttpRequest":
+        return JSONResponse({"detail": "Solicitud rechazada (falta cabecera X-Requested-With)."}, status_code=403)
+    if auth.is_public_path(path):
+        return await call_next(request)
+    try:
+        user = await run_in_threadpool(auth.user_from_request, request)
+    except auth.AuthError as e:
+        return JSONResponse({"detail": e.detail}, status_code=e.status)
+    if user is None:
+        return JSONResponse({"detail": "Sesión no válida o expirada."}, status_code=401)
+    response = await call_next(request)
+    if getattr(request.state, "session_needs_renewal", False):
+        token, max_age = auth.issue_token(user)
+        auth.set_session_cookie(response, token, max_age)
+    return response
+
+
+app.include_router(auth_router)
+app.include_router(system_router)
+app.include_router(survey_router)
 app.include_router(coordination_router)
 app.include_router(billing_router)
+app.include_router(cost_centers_router)
 
 
 @app.get("/api/health")
@@ -47,9 +100,9 @@ def health_db():
 
 
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(project_type_id: Optional[int] = None):
     try:
-        return metrics.build_dashboard_payload()
+        return metrics.build_dashboard_payload(project_type_id=project_type_id)
     except Exception as e:
         raise HTTPException(status_code=503, detail="Error al leer GLPI: " + str(e)) from e
 
@@ -157,173 +210,17 @@ def indicators_project_types():
         raise HTTPException(status_code=503, detail="Error al leer tipos de proyecto: " + str(e)) from e
 
 
-@app.get("/api/indicators/time-tickets-by-project")
-def indicators_time_tickets_by_project(
-    date_from: str,
-    date_to: str,
-    project_type_id: Optional[int] = None,
-):
-    """
-    Tiempo de gestión en rango (tareas) y total de tickets dados de alta en el rango, por proyecto.
-    project_type_id omitido o null = todos los tipos de proyecto.
-    """
+@app.get("/api/indicators/problems-support")
+def indicators_problems_support(date_from: str, date_to: str):
+    """Totales y estados de problemas GLPI; serie semanal de altas y de resoluciones/cierres en el rango."""
     try:
-        return indicators.time_and_tickets_by_project(
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
+        return indicators.problems_support_indicators(date_from=date_from, date_to=date_to)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(
             status_code=503,
-            detail="Error al leer indicadores por proyecto: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/tickets-by-request-type")
-def indicators_tickets_by_request_type(
-    date_from: str,
-    date_to: str,
-    project_type_id: Optional[int] = None,
-):
-    """Totales por fuente de solicitud (categoría) en el rango; mismo alcance de proyecto que el gráfico principal."""
-    try:
-        return indicators.tickets_by_request_type(
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer tickets por fuente de solicitud: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/tickets-by-project-for-request-type")
-def indicators_tickets_by_project_for_request_type(
-    date_from: str,
-    date_to: str,
-    requesttypes_id: int = Query(..., ge=0, description="ID de glpi_requesttypes; 0 = sin fuente (NULL/0)"),
-    project_type_id: Optional[int] = None,
-):
-    """Desglose por proyecto para una fuente de solicitud concreta; mismos filtros que tickets-by-request-type."""
-    try:
-        return indicators.tickets_by_project_for_request_type(
-            requesttypes_id=requesttypes_id,
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer tickets por proyecto y fuente: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/tickets-created-detail-for-request-type-project")
-def indicators_tickets_created_detail_for_request_type_project(
-    date_from: str,
-    date_to: str,
-    project_id: int = Query(..., ge=1),
-    requesttypes_id: int = Query(..., ge=0),
-    project_type_id: Optional[int] = None,
-):
-    """Tickets incluidos en el conteo «creados en rango» por proyecto y fuente de solicitud."""
-    try:
-        return indicators.tickets_created_detail_for_request_type_project(
-            project_id=project_id,
-            requesttypes_id=requesttypes_id,
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer detalle de tickets: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/tickets-by-request-type-by-period")
-def indicators_tickets_by_request_type_by_period(
-    date_from: str,
-    date_to: str,
-    granularity: Literal["week", "month"] = "week",
-    project_type_id: Optional[int] = None,
-):
-    """Tickets dados de alta por periodo (semana o mes) y fuente de solicitud; mismo alcance que tickets-by-request-type."""
-    try:
-        return indicators.tickets_by_request_type_by_period(
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-            granularity=granularity,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer tickets por periodo y fuente: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/weekly-resolution-effort")
-def indicators_weekly_resolution_effort(
-    date_from: str,
-    date_to: str,
-    project_type_id: Optional[int] = None,
-    granularity: Literal["week", "month"] = "week",
-):
-    """
-    Evolución temporal: tiempo en tareas vs tickets resueltos, y media de horas de esfuerzo por resuelto.
-    `granularity=week`: semanas ISO (YEARWEEK); `granularity=month`: mes natural.
-    """
-    try:
-        return indicators.resolution_effort_by_period(
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-            granularity=granularity,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer esfuerzo de resolución por periodo: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/summary-kpis")
-def indicators_summary_kpis(
-    date_from: str,
-    date_to: str,
-    project_type_id: Optional[int] = None,
-):
-    """KPIs sobre glpi_tickets (creados y resueltos en rango, abiertos ahora). Con tipo de proyecto, solo tickets vinculados a proyectos de ese tipo (misma lógica que el gráfico)."""
-    try:
-        return indicators.summary_kpis(
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer KPIs de indicadores: " + str(e),
+            detail="Error al leer indicadores de problemas GLPI: " + str(e),
         ) from e
 
 
@@ -333,7 +230,7 @@ def indicators_tickets_resolved_in_range_detail(
     date_to: str,
     project_type_id: Optional[int] = None,
 ):
-    """Listado de tickets contados en tickets_resolved_in_range de summary_kpis (mismo alcance y criterios)."""
+    """Listado de tickets resueltos/cerrados en el rango (mismo alcance que los KPI de coordinación)."""
     try:
         return indicators.tickets_resolved_in_range_detail(
             project_type_id=project_type_id,
@@ -392,30 +289,6 @@ def indicators_tickets_open_now_detail(
         ) from e
 
 
-@app.get("/api/indicators/time-tickets-by-project/detail")
-def indicators_time_tickets_by_project_detail(
-    project_id: int,
-    date_from: str,
-    date_to: str,
-    project_type_id: Optional[int] = None,
-):
-    """Tickets y tiempo invertido en el rango para un proyecto (misma lógica que el gráfico)."""
-    try:
-        return indicators.time_tickets_detail_for_project(
-            project_id=project_id,
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer detalle de tickets: " + str(e),
-        ) from e
-
-
 @app.get("/api/indicators/support-hours-by-project-and-category")
 def indicators_support_hours_by_project_and_category(
     date_from: str,
@@ -440,32 +313,6 @@ def indicators_support_hours_by_project_and_category(
         raise HTTPException(
             status_code=503,
             detail="Error al leer horas de soporte por proyecto: " + str(e),
-        ) from e
-
-
-@app.get("/api/indicators/created-tickets-by-period")
-def indicators_created_tickets_by_period(
-    project_id: int,
-    date_from: str,
-    date_to: str,
-    granularity: Literal["week", "month"],
-    project_type_id: Optional[int] = None,
-):
-    """Tickets creados en rango, por semana ISO o por mes, para un proyecto."""
-    try:
-        return indicators.created_tickets_by_period(
-            project_id=project_id,
-            project_type_id=project_type_id,
-            date_from=date_from,
-            date_to=date_to,
-            granularity=granularity,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al leer tickets creados por periodo: " + str(e),
         ) from e
 
 

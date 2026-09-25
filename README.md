@@ -104,6 +104,22 @@ npm run build
 
 Definiciones operativas habituales: tickets abiertos, sin asignar (`glpi_tickets_users`), sin seguimiento ITIL público, tiempo en `glpi_tickettasks`, proyectos vía tablas GLPI/plugins según implementación en `app/metrics.py` y `app/reports.py`.
 
+## Acceso y envío automático de informes
+
+- **Acceso:** el panel exige iniciar sesión con usuario y contraseña de **GLPI** (cuentas locales, hash bcrypt).
+  Pueden ingresar los perfiles de `DASHBOARD_ALLOWED_PROFILES`; el menú **Configuraciones del sistema** solo lo
+  ven los de `DASHBOARD_ADMIN_PROFILES`. La sesión es una cookie HttpOnly firmada (`DASHBOARD_SESSION_SECRET`).
+- **Configuraciones del sistema → Correo e informes automáticos:** SMTP (contraseña cifrada con
+  `DASHBOARD_ENCRYPTION_KEY`), programación (frecuencia, hora, período), proyectos incluidos con tarifa/contrato/IVA,
+  vista previa del correo y del informe, envío manual e historial con reintentos.
+- **Un correo por proyecto:** *Para* = solicitantes de los tickets del informe (+ extra del proyecto); *CC* global y
+  por proyecto. El informe (PDF y/o Word) se genera en Python con el mismo diseño del export del navegador.
+- **Servicio `worker`** (`python -m app.jobs.worker`): revisa cada 30 s si toca enviar, procesa envíos en cola y
+  reintentos. Usa `GET_LOCK` de MySQL para no duplicar envíos.
+- **Tablas propias en la BD de GLPI** (se crean solas al arrancar): `glpi_plugin_coorddash_settings`,
+  `glpi_plugin_coorddash_report_projects`, `glpi_plugin_coorddash_report_runs` y `glpi_plugin_coorddash_report_sends`.
+- Empieza en **modo prueba** (todo se envía a los destinatarios de prueba) hasta que se desactive.
+
 ## Subir este proyecto a GitHub
 
 GitHub **no permite espacios** en el nombre del repositorio. Cree el repositorio con un nombre como `sistema-coordinacion-soporte` y descripción *Sistema Coordinación Soporte*.

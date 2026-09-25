@@ -1,4 +1,4 @@
-/** Tipos KPI compartidos entre `api.ts` y el módulo `coordination/` (evita imports circulares). */
+/** Tipos KPI compartidos entre `api.ts` y `modules/soporte/coordination/api.ts` (evita imports circulares). */
 
 export type IndicatorsSummaryKpisPayload = {
   date_from: string;

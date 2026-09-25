@@ -11,6 +11,20 @@ services:
     networks:
       - glpi-dash
 
+  # Envío automático de informes por correo (mismo código/imagen que `api`).
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.jobs.worker"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - glpi-dash
+
   web:
     build:
       context: ./frontend

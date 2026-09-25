@@ -29,10 +29,16 @@ export type DashboardPayload = {
   unassigned_top: {
     id: number;
     name: string | null;
-    status: number;
     priority: number;
+    priority_label: string;
+    fecha_apertura: string | null;
     hours_open: number;
     actiontime_total: number;
+    project_name: string | null;
+    hours_since_last_task: number | null;
+    hours_since_last_client_comment: number | null;
+    hours_since_last_assignee_comment: number | null;
+    assignees: string | null;
   }[];
   stale_top: {
     id: number;
@@ -53,8 +59,10 @@ export type DashboardPayload = {
   }[];
 };
 
-export async function fetchDashboard(): Promise<DashboardPayload> {
-  const res = await fetch("/api/dashboard");
+export async function fetchDashboard(projectTypeId?: number | null): Promise<DashboardPayload> {
+  const url = new URL("/api/dashboard", window.location.origin);
+  if (projectTypeId != null) url.searchParams.set("project_type_id", String(projectTypeId));
+  const res = await fetch(url.toString());
   if (!res.ok) {
     const t = await res.text();
     throw new Error(t || res.statusText);
@@ -120,38 +128,6 @@ export async function fetchProjectTypes(): Promise<ProjectType[]> {
   return payload.project_types;
 }
 
-export type IndicatorsTimeTicketsRow = {
-  project_id: number;
-  project_name: string;
-  total_tickets: number;
-  actiontime_seconds: number;
-  horas: number;
-};
-
-export type IndicatorsTimeTicketsPayload = {
-  date_from: string;
-  date_to: string;
-  project_type_id: number | null;
-  rows: IndicatorsTimeTicketsRow[];
-};
-
-export async function fetchIndicatorsTimeTicketsByProject(
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-): Promise<IndicatorsTimeTicketsPayload> {
-  const u = new URL("/api/indicators/time-tickets-by-project", window.location.origin);
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
 export type SupportHoursByProjectRow = {
   project_id: number;
   project_name: string;
@@ -189,193 +165,6 @@ export async function fetchSupportHoursByProjectAndCategory(
   return res.json();
 }
 
-export type IndicatorsTicketsByRequestTypeRow = {
-  requesttypes_id: number;
-  request_type_name: string;
-  ticket_count: number;
-};
-
-export type IndicatorsTicketsByRequestTypePayload = {
-  date_from: string;
-  date_to: string;
-  project_type_id: number | null;
-  rows: IndicatorsTicketsByRequestTypeRow[];
-};
-
-export async function fetchIndicatorsTicketsByRequestType(
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-): Promise<IndicatorsTicketsByRequestTypePayload> {
-  const u = new URL("/api/indicators/tickets-by-request-type", window.location.origin);
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
-export type IndicatorsTicketsByProjectForRequestTypeRow = {
-  project_id: number;
-  project_name: string;
-  ticket_count: number;
-  actiontime_seconds: number;
-  horas: number;
-};
-
-export type IndicatorsTicketsByProjectForRequestTypePayload = {
-  requesttypes_id: number;
-  request_type_name: string;
-  date_from: string;
-  date_to: string;
-  project_type_id: number | null;
-  rows: IndicatorsTicketsByProjectForRequestTypeRow[];
-};
-
-export async function fetchIndicatorsTicketsByProjectForRequestType(
-  requesttypesId: number,
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-): Promise<IndicatorsTicketsByProjectForRequestTypePayload> {
-  const u = new URL("/api/indicators/tickets-by-project-for-request-type", window.location.origin);
-  u.searchParams.set("requesttypes_id", String(requesttypesId));
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
-export type IndicatorsTicketDetailRow = {
-  ticket_id: number;
-  titulo: string | null;
-  actiontime_seconds: number;
-  assignees: string | null;
-};
-
-export type IndicatorsRtCreatedTicketsDetailPayload = {
-  project_id: number;
-  project_name: string;
-  requesttypes_id: number;
-  request_type_name: string;
-  project_type_id: number | null;
-  date_from: string;
-  date_to: string;
-  rows: IndicatorsTicketDetailRow[];
-};
-
-export async function fetchIndicatorsTicketsCreatedDetailForRequestTypeProject(
-  projectId: number,
-  requesttypesId: number,
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-): Promise<IndicatorsRtCreatedTicketsDetailPayload> {
-  const u = new URL(
-    "/api/indicators/tickets-created-detail-for-request-type-project",
-    window.location.origin,
-  );
-  u.searchParams.set("project_id", String(projectId));
-  u.searchParams.set("requesttypes_id", String(requesttypesId));
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
-export type IndicatorsTicketDetailPayload = {
-  project_id: number;
-  project_name: string;
-  project_type_id: number | null;
-  date_from: string;
-  date_to: string;
-  rows: IndicatorsTicketDetailRow[];
-};
-
-export async function fetchIndicatorsTimeTicketsDetail(
-  projectId: number,
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-): Promise<IndicatorsTicketDetailPayload> {
-  const u = new URL("/api/indicators/time-tickets-by-project/detail", window.location.origin);
-  u.searchParams.set("project_id", String(projectId));
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
-export type IndicatorsCreatedPeriodRow = {
-  period_key: string;
-  period_label: string;
-  ticket_count: number;
-};
-
-export type IndicatorsCreatedTicketsByPeriodPayload = {
-  project_id: number;
-  project_name: string;
-  project_type_id: number | null;
-  date_from: string;
-  date_to: string;
-  granularity: "week" | "month";
-  rows: IndicatorsCreatedPeriodRow[];
-};
-
-export type IndicatorsTicketsByRequestTypeByPeriodRow = {
-  period_sort: string;
-  period_label: string;
-  requesttypes_id: number;
-  request_type_name: string;
-  ticket_count: number;
-};
-
-export type IndicatorsTicketsByRequestTypeByPeriodPayload = {
-  date_from: string;
-  date_to: string;
-  project_type_id: number | null;
-  granularity: "week" | "month";
-  rows: IndicatorsTicketsByRequestTypeByPeriodRow[];
-};
-
-export async function fetchIndicatorsTicketsByRequestTypeByPeriod(
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-  granularity: "week" | "month",
-): Promise<IndicatorsTicketsByRequestTypeByPeriodPayload> {
-  const u = new URL("/api/indicators/tickets-by-request-type-by-period", window.location.origin);
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  u.searchParams.set("granularity", granularity);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
 export type {
   IndicatorsResolvedInRangeDetailPayload,
   IndicatorsResolvedInRangeRow,
@@ -384,24 +173,7 @@ export type {
   IndicatorsTicketKpiModalRow,
 } from "./indicatorsKpiTypes";
 
-import type { IndicatorsSummaryKpisPayload, IndicatorsTicketKpiModalPayload } from "./indicatorsKpiTypes";
-
-export async function fetchIndicatorsSummaryKpis(
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-): Promise<IndicatorsSummaryKpisPayload> {
-  const u = new URL("/api/indicators/summary-kpis", window.location.origin);
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
+import type { IndicatorsTicketKpiModalPayload } from "./indicatorsKpiTypes";
 
 async function fetchTicketKpiDetail(
   path: string,
@@ -455,55 +227,36 @@ export async function fetchIndicatorsTicketsOpenNowDetail(
   return fetchTicketKpiDetail("/api/indicators/tickets-open-now/detail", projectTypeId, dateFrom, dateTo);
 }
 
-export type IndicatorsWeeklyResolutionRow = {
-  period_key: string;
-  period_label: string;
-  actiontime_seconds: number;
-  tickets_resolved: number;
-  avg_seconds_per_resolved: number | null;
-  avg_hours_per_resolved: number | null;
+export type IndicatorsProblemsStatusRow = {
+  status_id: number;
+  status_label: string;
+  count: number;
 };
 
-export type IndicatorsWeeklyResolutionPayload = {
+export type IndicatorsProblemsWeeklyRow = {
+  period_sort: number;
+  period_label: string;
+  week_period_start: string;
+  week_period_end: string;
+  problems_created: number;
+  problems_resolved_or_closed: number;
+};
+
+export type IndicatorsProblemsSupportPayload = {
   date_from: string;
   date_to: string;
-  project_type_id: number | null;
-  granularity?: "week" | "month";
-  rows: IndicatorsWeeklyResolutionRow[];
+  total_problems: number;
+  by_status: IndicatorsProblemsStatusRow[];
+  weekly_rows: IndicatorsProblemsWeeklyRow[];
 };
 
-export async function fetchIndicatorsWeeklyResolutionEffort(
-  projectTypeId: number | null,
+export async function fetchIndicatorsProblemsSupport(
   dateFrom: string,
   dateTo: string,
-  granularity: "week" | "month" = "week",
-): Promise<IndicatorsWeeklyResolutionPayload> {
-  const u = new URL("/api/indicators/weekly-resolution-effort", window.location.origin);
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
+): Promise<IndicatorsProblemsSupportPayload> {
+  const u = new URL("/api/indicators/problems-support", window.location.origin);
   u.searchParams.set("date_from", dateFrom);
   u.searchParams.set("date_to", dateTo);
-  u.searchParams.set("granularity", granularity);
-  const res = await fetch(`${u.pathname}${u.search}`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || res.statusText);
-  }
-  return res.json();
-}
-
-export async function fetchIndicatorsCreatedTicketsByPeriod(
-  projectId: number,
-  projectTypeId: number | null,
-  dateFrom: string,
-  dateTo: string,
-  granularity: "week" | "month",
-): Promise<IndicatorsCreatedTicketsByPeriodPayload> {
-  const u = new URL("/api/indicators/created-tickets-by-period", window.location.origin);
-  u.searchParams.set("project_id", String(projectId));
-  if (projectTypeId != null) u.searchParams.set("project_type_id", String(projectTypeId));
-  u.searchParams.set("date_from", dateFrom);
-  u.searchParams.set("date_to", dateTo);
-  u.searchParams.set("granularity", granularity);
   const res = await fetch(`${u.pathname}${u.search}`);
   if (!res.ok) {
     const t = await res.text();
@@ -838,9 +591,181 @@ export async function fetchBillingTerceros(dateFrom: string, dateTo: string): Pr
   return res.json();
 }
 
+export type CostCenterHoursRow = {
+  proyecto: string;
+  centro_costo: string | null;
+  asignado: string;
+  tiempo_horas_minutos: string;
+  horas_laboradas: number;
+  pct_participacion: number;
+  total_seconds: number;
+};
+
+export type CostCenterHoursPayload = {
+  date_from: string;
+  date_to: string;
+  count: number;
+  rows: CostCenterHoursRow[];
+};
+
+export async function fetchCostCenterHours(
+  dateFrom: string,
+  dateTo: string,
+): Promise<CostCenterHoursPayload> {
+  const u = new URL("/api/cost-centers/hours", window.location.origin);
+  u.searchParams.set("date_from", dateFrom);
+  u.searchParams.set("date_to", dateTo);
+  const res = await fetch(`${u.pathname}${u.search}`);
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || res.statusText);
+  }
+  return res.json();
+}
+
+export type CostCenterTicketRow = {
+  ticket: number;
+  titulo: string | null;
+  fecha: string | null;
+  estado: string;
+  proyecto: string;
+  centro_costo: string | null;
+  asignado: string;
+  tiempo_horas_minutos: string;
+  horas_laboradas: number;
+  total_seconds: number;
+};
+
+export type CostCenterTicketsPayload = {
+  date_from: string;
+  date_to: string;
+  proyecto: string;
+  asignado: string;
+  count: number;
+  total_seconds: number;
+  horas_laboradas: number;
+  tickets: CostCenterTicketRow[];
+};
+
+export async function fetchCostCenterTickets(
+  dateFrom: string,
+  dateTo: string,
+  proyecto: string,
+  asignado: string,
+): Promise<CostCenterTicketsPayload> {
+  const u = new URL("/api/cost-centers/hours/tickets", window.location.origin);
+  u.searchParams.set("date_from", dateFrom);
+  u.searchParams.set("date_to", dateTo);
+  u.searchParams.set("proyecto", proyecto);
+  u.searchParams.set("asignado", asignado);
+  const res = await fetch(`${u.pathname}${u.search}`);
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || res.statusText);
+  }
+  return res.json();
+}
+
+export type KpiDatosRow = {
+  fecha: string | null;
+  cliente: string;
+  tecnico: string;
+  id_ticket: number;
+  cerrado_por_cliente: string;
+  calificacion: number;
+  ticket_calificado: string;
+  tipo_sla: string;
+  dentro_sla: string;
+  reapertura: string;
+  estado: string;
+  tecnico_id: number | null;
+  total_seconds: number;
+  tiempo_horas_minutos: string;
+  evaluado_kpi_cierre: string;
+};
+
+export type KpiResumenClienteTecnicoRow = {
+  tecnico: string;
+  cliente: string;
+  total_tickets: number;
+  total_tickets_evaluar: number;
+  tickets_cerrados_cliente: number;
+  pct_cierre_cliente: number | "--";
+  cumple_kpi_cierre_25: string;
+  variable_kpi_cierre_25: number | "--";
+  tickets_calificados: number;
+  pct_tickets_calificados: number | "--";
+  cumple_kpi_calificacion_20: string;
+  variable_kpi_calificacion_20: number | "--";
+  tickets_dentro_sla: number;
+  pct_cumplimiento_sla: number | "--";
+  cumple_kpi_sla: string;
+  variable_kpi_sla_30: number | "--";
+  tickets_reaperturas: number;
+  pct_reaperturas: number;
+  cumple_kpi_reapertura: string;
+  variable_kpi_reapertura_25: number;
+  total_seg_glpi: number;
+  total_horas: number;
+};
+
+export type KpiResumenTecnicoGlobalRow = {
+  tecnico: string;
+  total_tickets: number;
+  total_tickets_evaluar_cierre: number;
+  tickets_cerrados_cliente: number;
+  pct_cierre_global: number;
+  cumple_kpi_cierre_25: string;
+  valor_25: number;
+  tickets_calificados: number;
+  pct_tickets_calificados: number;
+  cumple_kpi_calificacion_20: string;
+  alterno_contra_cierre: number;
+  valor_20: number;
+  tickets_dentro_sla: number;
+  pct_cumplimiento_sla: number;
+  cumple_kpi_sla: string;
+  valor_30: number;
+  tickets_reaperturas: number;
+  pct_reaperturas: number;
+  cumple_kpi_reapertura: string;
+  valor_25_reapertura: number;
+  total_pct_variable: number;
+  tiempo_glpi_seg: number;
+  tiempo_horas: number;
+  pct_soporte_finde_10: number;
+  variable_final: number;
+};
+
+export type KpiVariablesPayload = {
+  date_from: string;
+  date_to: string;
+  datos: KpiDatosRow[];
+  resumen_cliente_tecnico: KpiResumenClienteTecnicoRow[];
+  resumen_tecnico_global: KpiResumenTecnicoGlobalRow[];
+  counts: {
+    datos: number;
+    resumen_cliente_tecnico: number;
+    resumen_tecnico_global: number;
+  };
+};
+
+export async function fetchKpiVariables(
+  dateFrom: string,
+  dateTo: string,
+): Promise<KpiVariablesPayload> {
+  const u = new URL("/api/cost-centers/kpi-variables", window.location.origin);
+  u.searchParams.set("date_from", dateFrom);
+  u.searchParams.set("date_to", dateTo);
+  const res = await fetch(`${u.pathname}${u.search}`);
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || res.statusText);
+  }
+  return res.json();
+}
+
 export type {
-  CoordinationAssigneeTicketsPerHourPayload,
-  CoordinationAssigneeTicketsPerHourRow,
   CoordinationBucketDetailPayload,
   CoordinationSummaryKpisPayload,
   CoordinationTicketBucketKind,
@@ -850,13 +775,15 @@ export type {
   CoordinationWeeklyAssigneeWeekBlock,
   CoordinationWeeklyEvolutionPayload,
   CoordinationWeeklyEvolutionRow,
-} from "./coordination/api";
+  CoordinationWeeklyRequestTypeRow,
+  CoordinationWeeklyTicketsByRequestTypePayload,
+} from "./modules/soporte/coordination/api";
 
 export {
-  fetchCoordinationAssigneeTicketsPerHour,
   fetchCoordinationSummaryKpis,
   fetchCoordinationTicketBucketDetail,
   fetchCoordinationTicketsOutOfSlaDetail,
   fetchCoordinationWeeklyAssigneePerformance,
   fetchCoordinationWeeklyEvolution,
-} from "./coordination/api";
+  fetchCoordinationWeeklyTicketsByRequestType,
+} from "./modules/soporte/coordination/api";

@@ -1,0 +1,252 @@
+/* Encuesta pública: estilo formal con el azul corporativo del informe (#1F4E78). */
+.svy-page {
+  --svy-accent: #1f4e78;
+  --svy-accent-soft: #e8eff6;
+  --svy-border: #d5dee8;
+  --svy-text: #1c2530;
+  --svy-muted: #5b6776;
+  --svy-danger: #b42318;
+  min-height: 100vh;
+  background: #eef2f6;
+  padding: 2rem 1rem 3rem;
+  color: var(--svy-text);
+  font-family: var(--font);
+}
+
+.svy-card {
+  max-width: 640px;
+  margin: 0 auto;
+  background: #ffffff;
+  border: 1px solid var(--svy-border);
+  border-top: 5px solid var(--svy-accent);
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(16, 38, 64, 0.06);
+  padding: 1.75rem 1.75rem 1.5rem;
+}
+
+.svy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 1.1rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--svy-border);
+}
+
+.svy-logo {
+  width: 170px;
+  max-width: 55%;
+  height: auto;
+}
+
+.svy-eyebrow {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--svy-accent);
+}
+
+.svy-title,
+.svy-state h1 {
+  font-size: 1.35rem;
+  line-height: 1.3;
+  margin: 0 0 0.6rem;
+  color: var(--svy-accent);
+}
+
+.svy-intro {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.svy-legend {
+  margin: 0 0 1.25rem;
+  font-size: 0.82rem;
+  color: var(--svy-muted);
+}
+
+.svy-question {
+  border: none;
+  margin: 0 0 1.35rem;
+  padding: 0;
+  min-width: 0;
+}
+
+.svy-question legend,
+.svy-label {
+  display: block;
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin-bottom: 0.2rem;
+  padding: 0;
+}
+
+.svy-help {
+  margin: 0 0 0.6rem;
+  font-size: 0.86rem;
+  color: var(--svy-muted);
+}
+
+.svy-req {
+  color: var(--svy-danger);
+}
+
+.svy-optional {
+  font-weight: 400;
+  color: var(--svy-muted);
+}
+
+.svy-scale {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.svy-scale-btn,
+.svy-choice-btn {
+  font-family: var(--font);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--svy-accent);
+  background: #ffffff;
+  border: 1px solid var(--svy-border);
+  border-radius: 6px;
+  padding: 0.6rem 0;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.svy-scale-btn:hover,
+.svy-choice-btn:hover {
+  border-color: var(--svy-accent);
+  background: var(--svy-accent-soft);
+}
+
+.svy-scale-btn:focus-visible,
+.svy-choice-btn:focus-visible,
+.svy-submit:focus-visible,
+.svy-input:focus-visible {
+  outline: 3px solid rgba(31, 78, 120, 0.35);
+  outline-offset: 2px;
+}
+
+.svy-scale-btn.svy-selected,
+.svy-choice-btn.svy-selected {
+  background: var(--svy-accent);
+  border-color: var(--svy-accent);
+  color: #ffffff;
+}
+
+.svy-scale-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--svy-muted);
+  margin-top: 0.3rem;
+}
+
+.svy-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.svy-sub {
+  margin-top: 0.85rem;
+}
+
+.svy-input {
+  width: 100%;
+  font-family: var(--font);
+  font-size: 0.95rem;
+  color: var(--svy-text);
+  background: #ffffff;
+  border: 1px solid var(--svy-border);
+  border-radius: 6px;
+  padding: 0.6rem 0.7rem;
+  margin-top: 0.3rem;
+}
+
+textarea.svy-input {
+  resize: vertical;
+}
+
+.svy-error {
+  color: var(--svy-danger);
+  font-size: 0.83rem;
+  margin: 0.45rem 0 0;
+}
+
+.svy-submit {
+  width: 100%;
+  margin-top: 0.75rem;
+  font-family: var(--font);
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffffff;
+  background: var(--svy-accent);
+  border: none;
+  border-radius: 6px;
+  padding: 0.8rem;
+  cursor: pointer;
+}
+
+.svy-submit:hover:not(:disabled) {
+  background: #173d5e;
+}
+
+.svy-submit:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.svy-privacy {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--svy-muted);
+  margin: 0.85rem 0 0;
+}
+
+.svy-state {
+  text-align: center;
+  padding: 1rem 0 0.5rem;
+}
+
+.svy-state p {
+  margin: 0 0 0.7rem;
+  line-height: 1.6;
+}
+
+.svy-check {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 0.9rem;
+  border-radius: 50%;
+  background: var(--svy-accent-soft);
+  color: var(--svy-accent);
+  font-size: 1.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.svy-sign {
+  font-size: 0.85rem;
+  color: var(--svy-muted);
+  margin-top: 1.1rem !important;
+}
+
+@media (max-width: 480px) {
+  .svy-card {
+    padding: 1.25rem 1rem;
+  }
+
+  .svy-scale {
+    gap: 0.3rem;
+  }
+}

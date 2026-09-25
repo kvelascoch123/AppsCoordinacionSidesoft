@@ -4,8 +4,8 @@ from typing import Any, Dict, List
 
 from openai import OpenAI
 
-from app import reports
-from app.config import get_settings
+from app.modules.soporte import reports
+from app.modules.soporte.config import get_settings
 from app.db import fetch_all, fetch_one
 
 

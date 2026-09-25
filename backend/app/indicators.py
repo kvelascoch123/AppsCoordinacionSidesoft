@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Optional
 
 from pymysql.err import OperationalError
 
-from app.config import Settings, get_settings
+from app.modules.soporte.config import Settings, get_settings
 from app.db import fetch_all, fetch_one
-from app.metrics import _user_display_expr
+from app.modules.soporte.metrics import _user_display_expr
 
 # GLPI Incidente estándar: Nuevo / En curso / Planificado / En espera / Resuelto / Cerrado (5–6 configurables).
 _COORD_STATUS_NEW = 1
@@ -447,6 +447,7 @@ def _tickets_by_request_type_by_period_itils(
     date_to: str,
     granularity: str,
     settings: Settings,
+    project_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     s = settings
     extra, grp_period = _ticket_creation_period_exprs(granularity)
@@ -456,7 +457,12 @@ def _tickets_by_request_type_by_period_itils(
     if s.entities_id is not None:
         ticket_entity = " AND t.entities_id = %s"
         params_base = params_base + [s.entities_id]
-    params_q = list(params_base) + [date_from, date_to]
+    project_sql = ""
+    project_params: List[Any] = []
+    if project_id is not None and int(project_id) >= 1:
+        project_sql = " AND p.id = %s"
+        project_params = [int(project_id)]
+    params_q = list(params_base) + project_params + [date_from, date_to]
 
     sql = f"""
         SELECT
@@ -470,6 +476,7 @@ def _tickets_by_request_type_by_period_itils(
         LEFT JOIN glpi_requesttypes rt ON rt.id = t.requesttypes_id
         WHERE 1=1
           {pt_sql}
+          {project_sql}
           {ticket_entity}
           AND t.is_deleted = 0
           AND t.date >= %s
@@ -485,6 +492,7 @@ def tickets_by_request_type_by_period(
     date_from: str,
     date_to: str,
     granularity: str,
+    project_id: Optional[int] = None,
     settings: Optional[Settings] = None,
 ) -> Dict[str, Any]:
     """
@@ -503,7 +511,12 @@ def tickets_by_request_type_by_period(
     if s.entities_id is not None:
         ticket_entity = " AND t.entities_id = %s"
         params_base = params_base + [s.entities_id]
-    params_q = list(params_base) + [date_from, date_to]
+    project_sql = ""
+    project_params: List[Any] = []
+    if project_id is not None and int(project_id) >= 1:
+        project_sql = " AND p.id = %s"
+        project_params = [int(project_id)]
+    params_q = list(params_base) + project_params + [date_from, date_to]
 
     extra, grp_period = _ticket_creation_period_exprs(granularity)
     sql_plugin = f"""
@@ -535,6 +548,7 @@ def tickets_by_request_type_by_period(
         )
         WHERE p.is_deleted = 0
           {pt_sql}
+          {project_sql}
           {ticket_entity}
           AND t.is_deleted = 0
           AND t.date >= %s
@@ -553,6 +567,7 @@ def tickets_by_request_type_by_period(
                 date_to=date_to,
                 granularity=granularity,
                 settings=s,
+                project_id=project_id,
             )
         else:
             raise
@@ -581,6 +596,239 @@ def tickets_by_request_type_by_period(
         "project_type_id": project_type_id,
         "granularity": granularity,
         "rows": rows,
+    }
+
+
+def _tickets_by_request_type_week_detail_itils(
+    project_type_id: Optional[int],
+    date_from: str,
+    date_to: str,
+    period_sort: int,
+    requesttypes_id: int,
+    settings: Settings,
+    project_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    s = settings
+    req_type = int(s.requester_link_type)
+    solicitante_sq = f"{_kpi_detail_solicitante_expr(req_type)} AS solicitante"
+    time_sq = f"{_kpi_detail_actiontime_range_inner()} AS actiontime_seconds"
+    pt_sql = _project_type_sql(project_type_id)
+    params_base = _project_type_params(project_type_id)
+    ticket_entity = ""
+    if s.entities_id is not None:
+        ticket_entity = " AND t.entities_id = %s"
+        params_base = params_base + [s.entities_id]
+    st_sol = int(s.status_solved)
+    st_clo = int(s.status_closed)
+    estad_sq = _kpi_ticket_estado_case_sql(st_sol, st_clo).strip()
+    project_sql = ""
+    project_params: List[Any] = []
+    if project_id is not None and int(project_id) >= 1:
+        project_sql = " AND p.id = %s"
+        project_params = [int(project_id)]
+    rid = int(requesttypes_id)
+    yw = int(period_sort)
+
+    join_from = """
+        FROM glpi_tickets t
+        INNER JOIN glpi_itils_projects ip ON ip.items_id = t.id AND ip.itemtype = 'Ticket'
+        INNER JOIN glpi_projects p ON p.id = ip.projects_id AND p.is_deleted = 0
+    """
+    sql = f"""
+        SELECT
+            t.id AS ticket_id,
+            t.name AS titulo,
+            DATE_FORMAT(t.date, '%%Y-%%m-%%d %%H:%%i') AS fecha_creacion,
+            {solicitante_sq},
+            {time_sq},
+            NULLIF(TRIM(p.name), '') AS proyecto,
+            {estad_sq}
+        {join_from}
+        WHERE 1=1
+          {pt_sql}
+          {project_sql}
+          {ticket_entity}
+          AND t.is_deleted = 0
+          AND COALESCE(t.requesttypes_id, 0) = %s
+          AND YEARWEEK(t.date, 3) = %s
+          AND t.date >= %s
+          AND t.date < DATE_ADD(%s, INTERVAL 1 DAY)
+        ORDER BY t.date ASC, t.id ASC
+    """
+    params = (
+        list([date_from, date_from, date_to, date_to]) + params_base + project_params + [rid, yw, date_from, date_to]
+    )
+    return fetch_all(sql, tuple(params))
+
+
+def tickets_by_request_type_week_detail(
+    project_type_id: Optional[int],
+    date_from: str,
+    date_to: str,
+    period_sort: int,
+    requesttypes_id: int,
+    project_id: Optional[int] = None,
+    settings: Optional[Settings] = None,
+) -> Dict[str, Any]:
+    """Tickets de una celda: semana ISO (`YEARWEEK(date,3)`), fuente y rango; mismo alcance que el agregado semanal."""
+    datetime.strptime(date_from, "%Y-%m-%d")
+    datetime.strptime(date_to, "%Y-%m-%d")
+    rid = int(requesttypes_id)
+    if rid < 0:
+        raise ValueError("requesttypes_id no válido.")
+    yw = int(period_sort)
+    if yw < 190001 or yw > 299953:
+        raise ValueError("period_sort no válido (YEARWEEK ISO esperado).")
+
+    s = settings or get_settings()
+    req_type = int(s.requester_link_type)
+    st_sol = int(s.status_solved)
+    st_clo = int(s.status_closed)
+    solicitante_sq = f"{_kpi_detail_solicitante_expr(req_type)} AS solicitante"
+    time_sq = f"{_kpi_detail_actiontime_range_inner()} AS actiontime_seconds"
+    estad_sq = _kpi_ticket_estado_case_sql(st_sol, st_clo).strip()
+
+    join_from = f"""
+            FROM glpi_tickets t
+            LEFT JOIN glpi_plugin_fields_ticketticketsformfields pltff ON pltff.items_id = t.id
+            LEFT JOIN (
+                SELECT tickets_id, MIN(users_id) AS users_id
+                FROM glpi_tickets_users
+                WHERE type = {req_type}
+                GROUP BY tickets_id
+            ) tup ON tup.tickets_id = t.id
+            LEFT JOIN (
+                SELECT items_id,
+                    MIN(
+                        REPLACE(REPLACE(REPLACE(projects_id_proyectorelacionadouserfield, '"', ''), '[', ''), ']', '')
+                    ) AS project_id_str
+                FROM glpi_plugin_fields_userproyectorelacionadousers
+                GROUP BY items_id
+            ) up ON up.items_id = tup.users_id
+            INNER JOIN glpi_projects p ON p.id = COALESCE(
+                NULLIF(pltff.projects_id_proyectorelacionadofieldtwo, 0),
+                CAST(NULLIF(TRIM(up.project_id_str), '') AS UNSIGNED)
+            )
+    """
+
+    if project_type_id is not None and int(project_type_id) >= 1:
+        pt_sql = _project_type_sql(project_type_id)
+        params_base = _project_type_params(project_type_id)
+        ticket_entity = ""
+        if s.entities_id is not None:
+            ticket_entity = " AND t.entities_id = %s"
+            params_base = params_base + [s.entities_id]
+        project_sql = ""
+        project_params: List[Any] = []
+        if project_id is not None and int(project_id) >= 1:
+            project_sql = " AND p.id = %s"
+            project_params = [int(project_id)]
+        sql_plugin = f"""
+            SELECT
+                t.id AS ticket_id,
+                t.name AS titulo,
+                DATE_FORMAT(t.date, '%%Y-%%m-%%d %%H:%%i') AS fecha_creacion,
+                {solicitante_sq},
+                {time_sq},
+                NULLIF(TRIM(p.name), '') AS proyecto,
+                {estad_sq}
+            {join_from}
+            WHERE p.is_deleted = 0
+              {pt_sql}
+              {project_sql}
+              {ticket_entity}
+              AND t.is_deleted = 0
+              AND COALESCE(t.requesttypes_id, 0) = %s
+              AND YEARWEEK(t.date, 3) = %s
+              AND t.date >= %s
+              AND t.date < DATE_ADD(%s, INTERVAL 1 DAY)
+            ORDER BY t.date ASC, t.id ASC
+        """
+        params = (
+            list([date_from, date_from, date_to, date_to])
+            + params_base
+            + project_params
+            + [rid, yw, date_from, date_to]
+        )
+        try:
+            raw_rows = fetch_all(sql_plugin, tuple(params))
+        except OperationalError as e:
+            if e.args and e.args[0] == 1146:
+                raw_rows = _tickets_by_request_type_week_detail_itils(
+                    project_type_id=project_type_id,
+                    date_from=date_from,
+                    date_to=date_to,
+                    period_sort=yw,
+                    requesttypes_id=rid,
+                    settings=s,
+                    project_id=project_id,
+                )
+            else:
+                raise
+    else:
+        ticket_entity = ""
+        params_entity: List[Any] = []
+        if s.entities_id is not None:
+            ticket_entity = " AND t.entities_id = %s"
+            params_entity = [s.entities_id]
+        project_sql = ""
+        project_params: List[Any] = []
+        if project_id is not None and int(project_id) >= 1:
+            project_sql = " AND p.id = %s"
+            project_params = [int(project_id)]
+        sql_plugin = f"""
+            SELECT
+                t.id AS ticket_id,
+                t.name AS titulo,
+                DATE_FORMAT(t.date, '%%Y-%%m-%%d %%H:%%i') AS fecha_creacion,
+                {solicitante_sq},
+                {time_sq},
+                NULLIF(TRIM(p.name), '') AS proyecto,
+                {estad_sq}
+            {join_from}
+            WHERE p.is_deleted = 0
+              {project_sql}
+              {ticket_entity}
+              AND t.is_deleted = 0
+              AND COALESCE(t.requesttypes_id, 0) = %s
+              AND YEARWEEK(t.date, 3) = %s
+              AND t.date >= %s
+              AND t.date < DATE_ADD(%s, INTERVAL 1 DAY)
+            ORDER BY t.date ASC, t.id ASC
+        """
+        params = (
+            list([date_from, date_from, date_to, date_to])
+            + project_params
+            + params_entity
+            + [rid, yw, date_from, date_to]
+        )
+        try:
+            raw_rows = fetch_all(sql_plugin, tuple(params))
+        except OperationalError as e:
+            if e.args and e.args[0] == 1146:
+                raw_rows = _tickets_by_request_type_week_detail_itils(
+                    project_type_id=None,
+                    date_from=date_from,
+                    date_to=date_to,
+                    period_sort=yw,
+                    requesttypes_id=rid,
+                    settings=s,
+                    project_id=project_id,
+                )
+            else:
+                raise
+
+    pid_out = int(project_id) if project_id is not None and int(project_id) >= 1 else None
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "project_type_id": project_type_id,
+        "rows": _kpi_ticket_detail_normalize_rows(raw_rows),
+        "project_id": pid_out,
+        "period_sort": yw,
+        "requesttypes_id": rid,
+        "request_type_name": _request_type_display_name(rid),
     }
 
 
