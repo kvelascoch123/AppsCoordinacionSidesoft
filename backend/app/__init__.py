@@ -1,1 +1,0 @@
-# GLPI Coordination Dashboard API
